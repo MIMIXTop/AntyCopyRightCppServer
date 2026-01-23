@@ -1,4 +1,14 @@
 #include "Server.hpp"
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/http/dynamic_body_fwd.hpp>
+#include <boost/beast/http/field.hpp>
+#include <boost/beast/http/file_body_fwd.hpp>
+#include <boost/beast/http/message_fwd.hpp>
+#include <boost/beast/http/string_body_fwd.hpp>
+#include <boost/beast/http/verb.hpp>
 #include <boost/url.hpp>
 #include <boost/url/urls.hpp>
 #include <format>
@@ -7,6 +17,9 @@
 #include <variant>
 #include "RequestDTO.hpp"
 #include "util.hpp"
+
+#define GOOGLE_CLASSROOM_HOST "classroom.googleapis.com"
+#define GOOGLE_HOST           "www.googleapis.com"
 
 namespace Network {
 
@@ -27,6 +40,12 @@ Server::Server(
         asio::ssl::context::single_dh_use);
     ssl_ctx_.use_certificate_chain_file(cert_file);
     ssl_ctx_.use_private_key_file(private_key_file, asio::ssl::context::pem);
+
+    googleSession = std::make_unique<Session>(ioc_);
+    classroomSession = std::make_unique<Session>(ioc_);
+
+    asio::co_spawn(ioc_, googleSession->connectToSender(GOOGLE_HOST), asio::detached);
+    asio::co_spawn(ioc_, classroomSession->connectToSender(GOOGLE_CLASSROOM_HOST), asio::detached);
 }
 
 asio::awaitable<void> Server::streamReader(ssl_stream& stream) {
@@ -35,14 +54,25 @@ asio::awaitable<void> Server::streamReader(ssl_stream& stream) {
 
     co_await http::async_read(stream, buffer, req, asio::use_awaitable);
 
-    http::response<http::string_body> res { http::status::ok, req.version() };
-    res.set(http::field::server, "AntyCopyRightServer");
-    res.set(http::field::content_type, "application/json");
-    res.body() = R"({"status": "ok", "message": "Hello from C++20 HTTPS server!"})";
-    res.prepare_payload();
+    auto newRequest = co_await requestHandler(req);
 
-    co_await http::async_write(stream, res, asio::use_awaitable);
-    co_await stream.async_shutdown(asio::use_awaitable);
+    if (newRequest.target() == "/error") {
+        http::response<http::string_body> res { http::status::bad_request, req.version() };
+        res.set(http::field::server, "AntyCopyRightServer");
+        res.set(http::field::content_type, "application/json");
+        res.body() = newRequest.body();
+        res.prepare_payload();
+
+        co_await http::async_write(stream, res, asio::use_awaitable);
+        co_await stream.async_shutdown(asio::use_awaitable);
+        co_return;
+    } else {
+        auto res = co_await sender(newRequest);
+
+        co_await http::async_write(stream, res, asio::use_awaitable);
+        co_await stream.async_shutdown(asio::use_awaitable);
+        co_return;
+    }
 }
 
 asio::awaitable<void> Server::doSession(ssl_stream stream) {
@@ -75,19 +105,56 @@ asio::awaitable<void> Server::listen() {
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
-asio::awaitable<http::response<http::dynamic_body>> Server::requestHandler(http::request<http::string_body> req) {
-    auto dto = Server::getRequestTypeOfTarget(req.target());
+asio::awaitable<http::request<http::string_body>> Server::requestHandler(http::request<http::string_body> req) {
+    auto auth_token_string = req[http::field::authorization];
 
+    auto dto =
+        !auth_token_string.empty()
+            ? Server::getRequestTypeOfTarget(req.target())
+            : DTOError { .errorMessage = "Not found google access token" };
+
+    http::request<http::string_body> googleRequest;
     std::visit(
         util::match {
-          [&]([[maybe_unused]] DTOCourseList) {},
-          [&](DTOCourseWorksList) {},
-          [&](DTOStudentsList) {},
-          [&](DTOStudentWorksData) {},
-          [&](DTOStudentWorksDownload) {},
-          [&](DTOError) {},
+          [&googleRequest]([[maybe_unused]] DTOCourseList) {
+              googleRequest.target("/v1/corses");
+              googleRequest.set(http::field::accept, "application/json");
+              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+          },
+          [&googleRequest](DTOCourseWorksList courseWorkList) {
+              googleRequest.target(std::format("/v1/courses/{}/courseWork", courseWorkList.courseId));
+              googleRequest.set(http::field::accept, "application/json");
+              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+          },
+          [&googleRequest](DTOStudentsList studentList) {
+              googleRequest.target(std::format("/v1/courses/{}/students", studentList.courseId));
+              googleRequest.set(http::field::accept, "application/json");
+              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+          },
+          [&googleRequest](DTOStudentWorksData studentSubmissins) {
+              googleRequest.target(std::format(
+                  "/v1/corses/{}/courseWork/{}/StudentSubmissions", studentSubmissins.courseId,
+                  studentSubmissins.courseWorkId));
+              googleRequest.set(http::field::accept, "application/json");
+              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+          },
+          [&googleRequest](DTOStudentWorksDownload downloadFile) {
+              googleRequest.target(std::format("/drive/v3/files/{}?alt=media", downloadFile.fileId));
+              googleRequest.set(http::field::host, GOOGLE_HOST);
+          },
+          [&googleRequest](DTOError error) {
+              googleRequest.target("/error");
+              googleRequest.body() = std::format(R"({{"error": "{}"}})", error.errorMessage);
+              googleRequest.set(http::field::content_type, "application/json");
+              googleRequest.set(http::field::host, "localserver");
+          },
         },
         dto);
+    googleRequest.method(http::verb::get);
+    googleRequest.set(http::field::authorization, auth_token_string);
+    googleRequest.keep_alive(req.keep_alive());
+    googleRequest.prepare_payload();
+    co_return googleRequest;
 }
 
 DTOCreateRequest Server::getRequestTypeOfTarget(std::string_view target) {
@@ -193,4 +260,13 @@ DTOCreateRequest Server::getRequestTypeOfTarget(std::string_view target) {
     }
 }
 
+asio::awaitable<http::response<http::dynamic_body>> Server::sender(http::request<http::string_body> req) {
+    http::response<http::dynamic_body> res;
+    if (req[http::field::host] == GOOGLE_HOST) {
+        res = co_await googleSession->sendRequest(req);
+    } else {
+        res = co_await classroomSession->sendRequest(req);
+    }
+    co_return res;
+}
 }   // namespace Network

@@ -1,10 +1,17 @@
 #pragma once
 
 #include "RequestDTO.hpp"
+#include "Session.hpp"
+#include "ConfigParser.hpp"
 
 #include <boost/asio.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio/ssl.hpp>
+#include <boost/beast/http/dynamic_body_fwd.hpp>
+#include <boost/beast/http/message_fwd.hpp>
+#include <boost/beast/http/string_body_fwd.hpp>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -41,8 +48,13 @@ private:
 
     asio::awaitable<void> streamReader(ssl_stream& stream);
     asio::awaitable<void> doSession(ssl_stream stream);
-    asio::awaitable<http::response<http::dynamic_body>> requestHandler(http::request<http::string_body> req);
+    asio::awaitable<http::request<http::string_body>> requestHandler(http::request<http::string_body> req);
     DTOCreateRequest getRequestTypeOfTarget(std::string_view target);
     asio::awaitable<void> listen();
+    asio::awaitable<http::response<http::dynamic_body>> sender(http::request<http::string_body> req);
+
+    std::unique_ptr<Session> googleSession;
+    std::unique_ptr<Session> classroomSession;
+    Util::ConfigParser config;
 };
 }   // namespace Network

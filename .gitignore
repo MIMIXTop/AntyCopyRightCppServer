@@ -45,3 +45,5 @@
 /.vscode
 server.crt
 server.key
+
+.env

@@ -26,6 +26,9 @@ file(GLOB_RECURSE SRCS src/*.cpp)
 
 # Exclude main.cpp for library
 list(REMOVE_ITEM SRCS "${CMAKE_SOURCE_DIR}/src/main.cpp")
+configure_file(config.hpp.in ${CMAKE_BINARY_DIR}/config.hpp @ONLY)
+
+include_directories(${CMAKE_BINARY_DIR})
 
 add_library(${PROJECT_NAME}_lib ${SRCS})
 
