@@ -17,9 +17,11 @@
 #include <variant>
 #include "RequestDTO.hpp"
 #include "util.hpp"
+#include <iostream>
+#include <boost/stacktrace.hpp>
 
-#define GOOGLE_CLASSROOM_HOST "classroom.googleapis.com"
-#define GOOGLE_HOST           "www.googleapis.com"
+constexpr std::string_view GOOGLE_CLASSROOM_HOST = "classroom.googleapis.com";
+constexpr std::string_view GOOGLE_HOST = "www.googleapis.com";
 
 namespace Network {
 
@@ -44,34 +46,48 @@ Server::Server(
     googleSession = std::make_unique<Session>(ioc_);
     classroomSession = std::make_unique<Session>(ioc_);
 
-    asio::co_spawn(ioc_, googleSession->connectToSender(GOOGLE_HOST), asio::detached);
-    asio::co_spawn(ioc_, classroomSession->connectToSender(GOOGLE_CLASSROOM_HOST), asio::detached);
+    std::string hostG = GOOGLE_HOST.data();
+    std::string hostC = GOOGLE_CLASSROOM_HOST.data();
+
+    asio::co_spawn(ioc_, googleSession->connectToSender(hostG), asio::detached);
+    asio::co_spawn(ioc_, classroomSession->connectToSender(hostC), asio::detached);
 }
 
 asio::awaitable<void> Server::streamReader(ssl_stream& stream) {
-    beast::flat_buffer buffer;
-    http::request<http::string_body> req;
+    try {
+        beast::flat_buffer buffer;
+        http::request<http::string_body> req;
 
-    co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+        co_await http::async_read(stream, buffer, req, asio::use_awaitable);
 
-    auto newRequest = co_await requestHandler(req);
+        auto newRequest = co_await requestHandler(req);
 
-    if (newRequest.target() == "/error") {
-        http::response<http::string_body> res { http::status::bad_request, req.version() };
-        res.set(http::field::server, "AntyCopyRightServer");
-        res.set(http::field::content_type, "application/json");
-        res.body() = newRequest.body();
-        res.prepare_payload();
+        if (newRequest.target() == "/error") {
+            http::response<http::string_body> res { http::status::bad_request, req.version() };
+            res.set(http::field::server, "AntyCopyRightServer");
+            res.set(http::field::content_type, "application/json");
+            res.body() = newRequest.body();
+            res.prepare_payload();
 
-        co_await http::async_write(stream, res, asio::use_awaitable);
-        co_await stream.async_shutdown(asio::use_awaitable);
-        co_return;
-    } else {
-        auto res = co_await sender(newRequest);
+            co_await http::async_write(stream, res, asio::use_awaitable);
+            // co_await stream.async_shutdown(asio::use_awaitable);
+            co_return;
+        } else {
+            auto res = co_await sender(newRequest);
 
-        co_await http::async_write(stream, res, asio::use_awaitable);
-        co_await stream.async_shutdown(asio::use_awaitable);
-        co_return;
+            co_await http::async_write(stream, res, asio::use_awaitable);
+            // co_await stream.async_shutdown(asio::use_awaitable);
+            co_return;
+        }
+    } catch (const boost::system::system_error& e) {
+        if (e.code() == beast::http::error::end_of_stream) {
+            // Graceful connection closure
+            co_return;
+        }
+
+        std::cerr << "Exception in streamReader: " << e.what() << std::endl;
+        std::cerr << "Stacktrace:\n" << boost::stacktrace::stacktrace() << std::endl;
+        throw;
     }
 }
 
@@ -81,80 +97,97 @@ asio::awaitable<void> Server::doSession(ssl_stream stream) {
         while (true) {
             co_await streamReader(stream);
         }
-    } catch (...) {
+    } catch (const boost::system::system_error& e) {
+        if (e.code() == beast::http::error::end_of_stream) {
+            co_return;
+        }
+        std::cerr << "Exception in doSession: " << e.what() << std::endl;
+        std::cerr << "Stacktrace:\n" << boost::stacktrace::stacktrace() << std::endl;
         beast::error_code ec;
-        stream.next_layer().socket().shutdown(tcp::socket::shutdown_both, ec);
+    } catch (const std::exception& e) {
+        std::cerr << "Unknown exception in doSession" << std::endl;
+        std::cerr << "Stacktrace:\n" << boost::stacktrace::stacktrace() << std::endl;
     }
 }
 
 asio::awaitable<void> Server::listen() {
-    tcp::acceptor acceptor(ioc_);
-    tcp::endpoint endpoint(asio::ip::make_address(address_), std::stoi(port_));
+    try {
+        tcp::acceptor acceptor(ioc_);
+        tcp::endpoint endpoint(asio::ip::make_address(address_), std::stoi(port_));
 
-    acceptor.open(endpoint.protocol());
-    acceptor.set_option(asio::socket_base::reuse_address(true));
-    acceptor.bind(endpoint);
-    acceptor.listen();
+        acceptor.open(endpoint.protocol());
+        acceptor.set_option(asio::socket_base::reuse_address(true));
+        acceptor.bind(endpoint);
+        acceptor.listen();
 
-    while (true) {
-        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-        ssl_stream stream(std::move(socket), ssl_ctx_);
-        asio::co_spawn(ioc_, doSession(std::move(stream)), asio::detached);
+        while (true) {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            ssl_stream stream(std::move(socket), ssl_ctx_);
+            asio::co_spawn(ioc_, doSession(std::move(stream)), asio::detached);
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in listen: " << e.what() << std::endl;
+        throw;
     }
 }
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
 asio::awaitable<http::request<http::string_body>> Server::requestHandler(http::request<http::string_body> req) {
-    auto auth_token_string = req[http::field::authorization];
+    try {
+        auto auth_token_string = req[http::field::authorization];
 
-    auto dto =
-        !auth_token_string.empty()
-            ? Server::getRequestTypeOfTarget(req.target())
-            : DTOError { .errorMessage = "Not found google access token" };
+        auto dto =
+            !auth_token_string.empty()
+                ? Server::getRequestTypeOfTarget(req.target())
+                : DTOError { .errorMessage = "Not found google access token" };
 
-    http::request<http::string_body> googleRequest;
-    std::visit(
-        util::match {
-          [&googleRequest]([[maybe_unused]] DTOCourseList) {
-              googleRequest.target("/v1/corses");
-              googleRequest.set(http::field::accept, "application/json");
-              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
-          },
-          [&googleRequest](DTOCourseWorksList courseWorkList) {
-              googleRequest.target(std::format("/v1/courses/{}/courseWork", courseWorkList.courseId));
-              googleRequest.set(http::field::accept, "application/json");
-              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
-          },
-          [&googleRequest](DTOStudentsList studentList) {
-              googleRequest.target(std::format("/v1/courses/{}/students", studentList.courseId));
-              googleRequest.set(http::field::accept, "application/json");
-              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
-          },
-          [&googleRequest](DTOStudentWorksData studentSubmissins) {
-              googleRequest.target(std::format(
-                  "/v1/corses/{}/courseWork/{}/StudentSubmissions", studentSubmissins.courseId,
-                  studentSubmissins.courseWorkId));
-              googleRequest.set(http::field::accept, "application/json");
-              googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
-          },
-          [&googleRequest](DTOStudentWorksDownload downloadFile) {
-              googleRequest.target(std::format("/drive/v3/files/{}?alt=media", downloadFile.fileId));
-              googleRequest.set(http::field::host, GOOGLE_HOST);
-          },
-          [&googleRequest](DTOError error) {
-              googleRequest.target("/error");
-              googleRequest.body() = std::format(R"({{"error": "{}"}})", error.errorMessage);
-              googleRequest.set(http::field::content_type, "application/json");
-              googleRequest.set(http::field::host, "localserver");
-          },
-        },
-        dto);
-    googleRequest.method(http::verb::get);
-    googleRequest.set(http::field::authorization, auth_token_string);
-    googleRequest.keep_alive(req.keep_alive());
-    googleRequest.prepare_payload();
-    co_return googleRequest;
+        http::request<http::string_body> googleRequest;
+        std::visit(
+            util::match {
+              [&googleRequest]([[maybe_unused]] DTOCourseList) {
+                  googleRequest.target("/v1/courses");
+                  googleRequest.set(http::field::accept, "application/json");
+                  googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+              },
+              [&googleRequest](DTOCourseWorksList courseWorkList) {
+                  googleRequest.target(std::format("/v1/courses/{}/courseWork", courseWorkList.courseId));
+                  googleRequest.set(http::field::accept, "application/json");
+                  googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+              },
+              [&googleRequest](DTOStudentsList studentList) {
+                  googleRequest.target(std::format("/v1/courses/{}/students", studentList.courseId));
+                  googleRequest.set(http::field::accept, "application/json");
+                  googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+              },
+              [&googleRequest](DTOStudentWorksData studentSubmissins) {
+                  googleRequest.target(std::format(
+                      "/v1/courses/{}/courseWork/{}/studentSubmissions", studentSubmissins.courseId,
+                      studentSubmissins.courseWorkId));
+                  googleRequest.set(http::field::accept, "application/json");
+                  googleRequest.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+              },
+              [&googleRequest](DTOStudentWorksDownload downloadFile) {
+                  googleRequest.target(std::format("/drive/v3/files/{}?alt=media", downloadFile.fileId));
+                  googleRequest.set(http::field::host, GOOGLE_HOST);
+              },
+              [&googleRequest](DTOError error) {
+                  googleRequest.target("/error");
+                  googleRequest.body() = std::format(R"({{"error": "{}"}})", error.errorMessage);
+                  googleRequest.set(http::field::content_type, "application/json");
+                  googleRequest.set(http::field::host, "localserver");
+              },
+            },
+            dto);
+        googleRequest.method(http::verb::get);
+        googleRequest.set(http::field::authorization, auth_token_string);
+        googleRequest.keep_alive(req.keep_alive());
+        googleRequest.prepare_payload();
+        co_return googleRequest;
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in requestHandler: " << e.what() << std::endl;
+        throw;
+    }
 }
 
 DTOCreateRequest Server::getRequestTypeOfTarget(std::string_view target) {
@@ -261,12 +294,17 @@ DTOCreateRequest Server::getRequestTypeOfTarget(std::string_view target) {
 }
 
 asio::awaitable<http::response<http::dynamic_body>> Server::sender(http::request<http::string_body> req) {
-    http::response<http::dynamic_body> res;
-    if (req[http::field::host] == GOOGLE_HOST) {
-        res = co_await googleSession->sendRequest(req);
-    } else {
-        res = co_await classroomSession->sendRequest(req);
+    try {
+        http::response<http::dynamic_body> res;
+        if (req[http::field::host] == GOOGLE_HOST) {
+            res = co_await googleSession->sendRequest(req);
+        } else {
+            res = co_await classroomSession->sendRequest(req);
+        }
+        co_return res;
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in sender: " << e.what() << std::endl;
+        throw;
     }
-    co_return res;
 }
 }   // namespace Network

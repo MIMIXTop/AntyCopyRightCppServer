@@ -16,7 +16,7 @@ public:
 
     ~Session() = default;
 
-    boost::asio::awaitable<void> connectToSender(const std::string& host);
+    boost::asio::awaitable<void> connectToSender(const std::string host);
 
     boost::asio::awaitable<void> stopConnectToSender();
 

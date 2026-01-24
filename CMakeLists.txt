@@ -9,7 +9,7 @@ project(AntyCopyRightCppServer)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Boost REQUIRED json url headers)
+find_package(Boost REQUIRED json stacktrace_addr2line url headers)
 find_package(OpenSSL REQUIRED)
 
 FetchContent_Declare(
@@ -38,6 +38,7 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
         "${TORCH_LIBRARIES}"
         Boost::headers
         Boost::json
+        Boost::stacktrace_addr2line 
         Boost::url
         OpenSSL::SSL
         OpenSSL::Crypto
