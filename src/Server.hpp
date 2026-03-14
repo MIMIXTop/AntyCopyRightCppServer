@@ -1,6 +1,5 @@
 #pragma once
 
-#include "RequestDTO.hpp"
 #include "Session.hpp"
 #include "ConfigParser.hpp"
 
@@ -13,7 +12,6 @@
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <memory>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 
 namespace Network {
@@ -22,6 +20,7 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
 using ssl_stream = asio::ssl::stream<beast::tcp_stream>;
+using tcp_stream = beast::tcp_stream;
 
 class Server {
 public:
@@ -32,11 +31,8 @@ public:
 
 private:
     enum RequesType {
-        GetCourses,
-        GetCourseWorks,
-        GetStudentListOfCourse,
-        GetStudentSubmissions,
-        DownloadStudentSubmissin
+        GetStudentAnalizis,
+        GetCourseList,
     };
 
     static const std::unordered_map<std::string, RequesType> changeReqToEnum;
@@ -45,16 +41,13 @@ private:
     std::string address_;
     std::string port_;
     asio::ssl::context ssl_ctx_;
+    asio::thread_pool thread_pool_;
 
-    asio::awaitable<void> streamReader(ssl_stream& stream);
-    asio::awaitable<void> doSession(ssl_stream stream);
-    asio::awaitable<http::request<http::string_body>> requestHandler(http::request<http::string_body> req);
-    DTOCreateRequest getRequestTypeOfTarget(std::string_view target);
-    asio::awaitable<void> listen();
-    asio::awaitable<http::response<http::dynamic_body>> sender(http::request<http::string_body> req);
-
-    std::unique_ptr<Session> googleSession;
-    std::unique_ptr<Session> classroomSession;
     Util::ConfigParser config;
+
+    asio::awaitable<void> doSession(ssl_stream stream);
+    asio::awaitable<void> listen();
+    asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
+
 };
 }   // namespace Network

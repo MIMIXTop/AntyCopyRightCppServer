@@ -6,7 +6,7 @@ include(FetchContent)
 
 project(AntyCopyRightCppServer)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Boost REQUIRED json stacktrace_addr2line url headers)
