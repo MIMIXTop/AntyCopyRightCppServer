@@ -2,6 +2,7 @@
 #include "config.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <ranges>
 
 namespace Util {
@@ -14,6 +15,8 @@ ConfigParser::ConfigParser() {
                 variables.emplace(line.substr(0, pos), line.substr(pos + 1));
             }
         }
+    } else {
+        std::println(std::cerr, "[ConfigParser] ВНИМАНИЕ: Не удалось открыть файл конфигурации: {}", CONFIG_FILE_PATH);
     }
 }
 

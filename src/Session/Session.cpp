@@ -25,14 +25,14 @@ using tcp = asio::ip::tcp;
 namespace Network {
 Session::Session(asio::io_context& ioc) : resolver_(ioc), stream_(ioc, ctx_) {
     ctx_.set_default_verify_paths();
-    ctx_.set_verify_mode(asio::ssl::context::verify_peer);
+    ctx_.set_verify_mode(asio::ssl::context::verify_none);
 }
 
 bool Session::is_connected() const { return beast::get_lowest_layer(stream_).socket().is_open(); }
 
-asio::awaitable<void> Session::connectToSender(const std::string host) {
+asio::awaitable<void> Session::connectToSender(const std::string host, const std::string port) {
     try {
-        if (is_connected() && host == host_) {
+        if (is_connected() && host == host_ && port == port_) {
             co_return;
         }
 
@@ -42,8 +42,9 @@ asio::awaitable<void> Session::connectToSender(const std::string host) {
 
         std::println("Connecting to host: {}", host);
         host_ = host;
+        port_ = port;
 
-        auto result = co_await resolver_.async_resolve(host, "443", asio::use_awaitable);
+        auto result = co_await resolver_.async_resolve(host, port, asio::use_awaitable);
 
         co_await beast::get_lowest_layer(stream_).async_connect(result, asio::use_awaitable);
 
@@ -83,15 +84,30 @@ asio::awaitable<void> Session::stopConnectToSender() {
     }
 }
 
-asio::awaitable<http::response<http::string_body>> Session::sendRequest(http::request<http::string_body> req) {
+template <typename T>
+asio::awaitable<http::response<T>> Session::sendRequest(http::request<http::string_body> req) {
     try {
-        auto targetHost = std::string(req[http::field::host]);
-        co_await connectToSender(targetHost);
+        auto hostHeader = std::string(req[http::field::host]);
+
+        if (hostHeader.empty()) {
+            throw std::invalid_argument("Host header is empty!");
+        }
+
+        std::string targetHost = hostHeader;
+        std::string targetPort = "443";
+
+        auto colonPos = hostHeader.find(":");
+        if (colonPos != std::string::npos) {
+            targetHost = hostHeader.substr(0, colonPos);
+            targetPort = hostHeader.substr(colonPos + 1);
+        }
+
+        co_await connectToSender(targetHost, targetPort);
 
         beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(30));
         co_await http::async_write(stream_, req, asio::use_awaitable);
 
-        http::response<http::string_body> res;
+        http::response<T> res;
 
         beast::get_lowest_layer(stream_).expires_after(std::chrono::minutes(5));
 
@@ -106,12 +122,12 @@ asio::awaitable<http::response<http::string_body>> Session::sendRequest(http::re
     }
 }
 
-asio::awaitable<http::response<http::string_body>>
+asio::awaitable<http::response<http::vector_body<unsigned char>>>
 Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedirect) {
     int redirectCount = 0;
 
     while (redirectCount < maxRedirect) {
-        auto res = co_await sendRequest(req);
+        auto res = co_await sendRequest<http::vector_body<unsigned char>>(req);
 
         if (res.result() == http::status::found || res.result() == http::status::moved_permanently ||
             res.result() == http::status::temporary_redirect) {
@@ -135,6 +151,10 @@ Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedir
 
             if (!parsedUrl.host().empty()) {
                 newHost = parsedUrl.host();
+                if (parsedUrl.has_port()) {
+                    newHost += ":";
+                    newHost += parsedUrl.port();
+                }
             } else {
                 newHost = std::string(req[http::field::host]);
             }
@@ -143,7 +163,6 @@ Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedir
             if (newTarget.empty()) {
                 newTarget = "/";
             }
-
 
             if (parsedUrl.has_query()) {
                 newTarget += "?";
@@ -154,7 +173,7 @@ Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedir
                 co_await stopConnectToSender();
             }
 
-            http::request<http::string_body> newReq {http::verb::get, newTarget, 11};
+            http::request<http::string_body> newReq { http::verb::get, newTarget, 11 };
             newReq.set(http::field::host, newHost);
 
             if (req.find(http::field::user_agent) != req.end()) {
@@ -172,5 +191,11 @@ Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedir
     }
     throw std::runtime_error("Too many redirects");
 }
+
+template asio::awaitable<http::response<http::string_body>> Session::sendRequest<http::string_body>(
+    http::request<http::string_body>);
+
+template asio::awaitable<http::response<http::vector_body<unsigned char>>>
+    Session::sendRequest<http::vector_body<unsigned char>>(http::request<http::string_body>);
 
 }   // namespace Network

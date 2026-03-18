@@ -11,6 +11,7 @@
 #include <string>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
+#include <boost/beast/http/vector_body.hpp>
 
 namespace Network {
 class Session {
@@ -19,13 +20,14 @@ public:
 
     ~Session() = default;
 
-    boost::asio::awaitable<void> connectToSender(const std::string host);
+    boost::asio::awaitable<void> connectToSender(const std::string host, const std::string port);
     boost::asio::awaitable<void> stopConnectToSender();
 
-    boost::asio::awaitable<boost::beast::http::response<boost::beast::http::string_body>>
+    template<typename T>
+    boost::asio::awaitable<boost::beast::http::response<T>>
     sendRequest(boost::beast::http::request<boost::beast::http::string_body> req);
 
-    boost::asio::awaitable<boost::beast::http::response<boost::beast::http::string_body>>
+    boost::asio::awaitable<boost::beast::http::response<boost::beast::http::vector_body<unsigned char>>>
     downloadWithRedirect(boost::beast::http::request<boost::beast::http::string_body> req, int maxRedirect = 5);
 private:
 
@@ -33,6 +35,7 @@ private:
     boost::asio::ip::tcp::resolver resolver_;
     boost::beast::ssl_stream<boost::beast::tcp_stream> stream_;
     boost::beast::flat_buffer buffer_;
+    std::string port_;
     std::string host_;
     bool is_connected() const;
 };

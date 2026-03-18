@@ -1,16 +1,14 @@
 #pragma once
 
-#include "Session.hpp"
-#include "ConfigParser.hpp"
+#include "Session/Session.hpp"
+#include "Util/ConfigParser.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/beast.hpp>
 #include <boost/asio/ssl.hpp>
-#include <boost/beast/http/dynamic_body_fwd.hpp>
 #include <boost/beast/http/message_fwd.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
-#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -41,7 +39,6 @@ private:
     std::string address_;
     std::string port_;
     asio::ssl::context ssl_ctx_;
-    asio::thread_pool thread_pool_;
 
     Util::ConfigParser config;
 
