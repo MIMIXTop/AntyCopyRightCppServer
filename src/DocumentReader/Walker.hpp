@@ -8,6 +8,8 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 #include <unicode/uchar.h>
 #include <unicode/utf8.h>
@@ -15,14 +17,38 @@
 
 namespace Walker {
 struct SegmentDocWalker : pugi::xml_tree_walker {
+    SegmentDocWalker()
+      : SegmentDocWalker(defaultTopLevelHeadingStyles(), {}) {}
+
+    explicit SegmentDocWalker(std::unordered_set<std::string> topLevelHeadingStyles,
+                              std::vector<std::string> topLevelTocTitles = {},
+                              bool allowTocTitleMatching = false)
+      : topLevelHeadingStyles(std::move(topLevelHeadingStyles)), allowTocTitleMatching(allowTocTitleMatching) {
+        normalizedTopLevelTocTitles.reserve(topLevelTocTitles.size());
+        for (const auto& title : topLevelTocTitles) {
+            auto normalizedTitle = normalizeHeadingForMatch(title);
+            if (!normalizedTitle.empty()) {
+                normalizedTopLevelTocTitles.emplace_back(std::move(normalizedTitle));
+            }
+        }
+    }
+
+    static std::unordered_set<std::string> defaultTopLevelHeadingStyles() {
+        return { "Heading1", "1654", "1702" };
+    }
+
     std::vector<Documents::Paragraph> result;
     Documents::Paragraph currentSection;
     std::string paragraphText;
     std::string paragraphStyle;
+    std::unordered_set<std::string> topLevelHeadingStyles;
+    std::vector<std::string> normalizedTopLevelTocTitles;
+    bool allowTocTitleMatching = false;
     bool paragraphHasLetter = false;
     bool paragraphIsUpperCase = true;
     bool paragraphHasCyrillic = false;
     bool paragraphHasTocBookmark = false;
+    bool paragraphHasDotLeaderTab = false;
     bool skipCurrentRunText = false;
 
     bool for_each(pugi::xml_node& node) override {
@@ -31,6 +57,7 @@ struct SegmentDocWalker : pugi::xml_tree_walker {
         if (name == "w:p") {
             flushParagraph();
             paragraphStyle = node.child("w:pPr").child("w:pStyle").attribute("w:val").value();
+            paragraphHasDotLeaderTab = hasDotLeaderTab(node);
         }
 
         if (name == "w:r") {
@@ -67,11 +94,11 @@ struct SegmentDocWalker : pugi::xml_tree_walker {
 private:
     void flushParagraph() {
         if (!paragraphText.empty()) {
-            const bool isHeading = paragraphHasLetter && paragraphHasCyrillic && isHeadingParagraph();
+            const bool isHeading = !looksLikeManualTocRow() && paragraphHasLetter && paragraphHasCyrillic && isHeadingParagraph();
             if (isHeading) {
                 flushSection();
-                currentSection.title = paragraphText;
-            } else if (!currentSection.title.empty()) {
+                currentSection.title = normalizeTitle(paragraphText);
+            } else if (!looksLikeManualTocRow() && !currentSection.title.empty()) {
                 if (!currentSection.text.empty()) {
                     currentSection.text += '\n';
                 }
@@ -85,6 +112,7 @@ private:
         paragraphHasCyrillic = false;
         paragraphIsUpperCase = true;
         paragraphHasTocBookmark = false;
+        paragraphHasDotLeaderTab = false;
         skipCurrentRunText = false;
     }
 
@@ -106,6 +134,10 @@ private:
             return true;
         }
 
+        if (allowTocTitleMatching && matchesTopLevelTocTitle(paragraphText)) {
+            return true;
+        }
+
         if (paragraphHasTocBookmark && looksLikeHeadingText(paragraphText)) {
             return true;
         }
@@ -113,12 +145,8 @@ private:
         return paragraphIsUpperCase && looksLikeTopLevelHeadingText(paragraphText);
     }
 
-    static bool isHeadingStyle(std::string_view style) {
-        if (style == "Heading1") {
-            return true;
-        }
-
-        return style == "1654" || style == "1702";
+    bool isHeadingStyle(std::string_view style) const {
+        return !style.empty() && topLevelHeadingStyles.contains(std::string(style));
     }
 
     static bool looksLikeHeadingText(std::string_view text) {
@@ -187,6 +215,163 @@ private:
 
     static bool isAsciiSpace(char c) {
         return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == '\v';
+    }
+
+    bool matchesTopLevelTocTitle(std::string_view text) const {
+        if (normalizedTopLevelTocTitles.empty()) {
+            return false;
+        }
+
+        const auto normalizedText = normalizeHeadingForMatch(text);
+        if (normalizedText.empty()) {
+            return false;
+        }
+
+        for (const auto& tocTitle : normalizedTopLevelTocTitles) {
+            if (normalizedText == tocTitle) {
+                return true;
+            }
+
+            if (tocTitle.starts_with(normalizedText) && tocTitle.size() > normalizedText.size() &&
+                tocTitle[normalizedText.size()] == ' ') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool looksLikeManualTocRow() const {
+        return paragraphHasDotLeaderTab || (hasDotLeaders(paragraphText) && endsWithPageNumber(paragraphText));
+    }
+
+    static bool hasDotLeaderTab(pugi::xml_node paragraph) {
+        const auto tabs = paragraph.child("w:pPr").child("w:tabs");
+        for (const auto tab : tabs.children("w:tab")) {
+            if (std::string_view(tab.attribute("w:leader").value()) == "dot") {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static bool hasDotLeaders(std::string_view text) {
+        return text.find("...") != std::string_view::npos || text.find("…") != std::string_view::npos;
+    }
+
+    static bool endsWithPageNumber(std::string_view text) {
+        text = trim(text);
+        if (text.empty() || text.back() < '0' || text.back() > '9') {
+            return false;
+        }
+
+        std::size_t i = text.size();
+        while (i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9') {
+            --i;
+        }
+
+        return i > 0 && !isAsciiSpace(text[i - 1]);
+    }
+
+    static std::string normalizeHeadingForMatch(std::string_view text) {
+        std::string normalized;
+        normalized.reserve(text.size());
+
+        int32_t i = 0;
+        const int32_t length = static_cast<int32_t>(text.length());
+        const auto* data = reinterpret_cast<const uint8_t*>(text.data());
+        bool previousSpace = true;
+
+        while (i < length) {
+            UChar32 ch = 0;
+            U8_NEXT(data, i, length, ch);
+            if (ch < 0) {
+                continue;
+            }
+
+            if (ch == 0x200B || ch == 0xFEFF) {
+                continue;
+            }
+
+            if (ch == 0x00A0 || u_isspace(ch) || u_ispunct(ch)) {
+                if (!previousSpace) {
+                    normalized += ' ';
+                    previousSpace = true;
+                }
+                continue;
+            }
+
+            const auto lower = u_tolower(ch);
+            char buffer[4];
+            int32_t offset = 0;
+            auto* output = reinterpret_cast<uint8_t*>(buffer);
+            U8_APPEND_UNSAFE(output, offset, lower);
+            normalized.append(buffer, static_cast<std::size_t>(offset));
+            previousSpace = false;
+        }
+
+        while (!normalized.empty() && normalized.back() == ' ') {
+            normalized.pop_back();
+        }
+
+        return stripLeadingTopLevelNumber(std::move(normalized));
+    }
+
+    static std::string stripLeadingTopLevelNumber(std::string text) {
+        std::size_t i = 0;
+        bool hasDigit = false;
+        while (i < text.size() && text[i] >= '0' && text[i] <= '9') {
+            hasDigit = true;
+            ++i;
+        }
+
+        if (!hasDigit || i >= text.size() || text[i] != ' ') {
+            return text;
+        }
+
+        text.erase(0, i + 1);
+        return text;
+    }
+
+    static std::string normalizeTitle(std::string_view text) {
+        std::string normalized;
+        normalized.reserve(text.size());
+
+        int32_t i = 0;
+        const int32_t length = static_cast<int32_t>(text.length());
+        const auto* data = reinterpret_cast<const uint8_t*>(text.data());
+        bool previousSpace = true;
+
+        while (i < length) {
+            UChar32 ch = 0;
+            U8_NEXT(data, i, length, ch);
+            if (ch < 0 || u_isdigit(ch)) {
+                continue;
+            }
+
+            if (ch == 0x00A0 || u_isspace(ch)) {
+                if (!previousSpace) {
+                    normalized += ' ';
+                    previousSpace = true;
+                }
+                continue;
+            }
+
+            ch = u_tolower(ch);
+            char buffer[4];
+            int32_t offset = 0;
+            auto* output = reinterpret_cast<uint8_t*>(buffer);
+            U8_APPEND_UNSAFE(output, offset, ch);
+            normalized.append(buffer, static_cast<std::size_t>(offset));
+            previousSpace = false;
+        }
+
+        while (!normalized.empty() && normalized.back() == ' ') {
+            normalized.pop_back();
+        }
+
+        return normalized;
     }
 
     static bool isInsideTableOfContents(pugi::xml_node node) {

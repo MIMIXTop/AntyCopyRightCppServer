@@ -40,7 +40,7 @@ set(MZ_PROJECT OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(googletest pugixml minizip-ng)
 
-file(GLOB_RECURSE SRCS src/*.cpp)
+file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS src/*.cpp)
 list(REMOVE_ITEM SRCS "${CMAKE_SOURCE_DIR}/src/main.cpp")
 
 configure_file(config.hpp.in ${CMAKE_BINARY_DIR}/config.hpp @ONLY)

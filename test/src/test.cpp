@@ -27,13 +27,13 @@ TEST(WalkerTest, SegmentDocWalkerTest) {
     auto res = walker.result;
 
     EXPECT_EQ(res.size(), 3);
-    EXPECT_EQ(res[0].title, "1 ПОСТРОЕНИЕ ИНФОЛОГИЧЕСКОЙ КОНЦЕПТУАЛЬНОЙ МОДЕЛИ");
+    EXPECT_EQ(res[0].title, "построение инфологической концептуальной модели");
     EXPECT_EQ(res[0].text, "обычный текст между заголовками");
-    EXPECT_EQ(res[1].title, "2 ПОСТРОЕНИЕ СХЕМЫ РЕЛЯЦИОННОЙ БАЗЫ ДАННЫХ");
+    EXPECT_EQ(res[1].title, "построение схемы реляционной базы данных");
     EXPECT_EQ(res[1].text,
               "длфвоаыдвалопывдалоп\n"
               "длывфоадфлыофдывла фы влдаод фывад лфовыда лождывло аджфлыо");
-    EXPECT_EQ(res[2].title, "3 СОЗДАНИЕ СПРОЕКТИРОВАННОЙ БАЗЫ ДАННЫХ");
+    EXPECT_EQ(res[2].title, "создание спроектированной базы данных");
     EXPECT_EQ(res[2].text, "конец документа");
 
 }
@@ -68,9 +68,9 @@ TEST(WalkerTest, SegmentDocWalkerSkipsTableOfContents) {
     auto res = walker.result;
 
     ASSERT_EQ(res.size(), 2);
-    EXPECT_EQ(res[0].title, "1 ПЕРВАЯ ГЛАВА");
+    EXPECT_EQ(res[0].title, "первая глава");
     EXPECT_EQ(res[0].text, "Текст первой главы");
-    EXPECT_EQ(res[1].title, "2 ВТОРАЯ ГЛАВА");
+    EXPECT_EQ(res[1].title, "вторая глава");
     EXPECT_EQ(res[1].text, "Текст второй главы");
 }
 
@@ -97,6 +97,6 @@ TEST(WalkerTest, SegmentDocWalkerSkipsCourierNewRuns) {
     auto res = walker.result;
 
     ASSERT_EQ(res.size(), 1);
-    EXPECT_EQ(res[0].title, "1 ПЕРВАЯ ГЛАВА");
+    EXPECT_EQ(res[0].title, "первая глава");
     EXPECT_EQ(res[0].text, "Основной текст");
 }

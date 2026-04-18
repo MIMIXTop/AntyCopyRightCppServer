@@ -1,4 +1,5 @@
 #include "pugixml.hpp"
+#include "DocumentReader/DocReader.hpp"
 #include "DocumentReader/Walker.hpp"
 
 #include <gtest/gtest.h>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -179,6 +181,12 @@ protected:
         return walker.result;
     }
 
+    static std::vector<unsigned char> readBinaryFile(const std::filesystem::path& path) { return readFile(path); }
+
+    static std::string readDocxEntryFixture(const std::filesystem::path& path, const char* entryName) {
+        return readDocxEntry(path, entryName);
+    }
+
 private:
     static std::vector<unsigned char> readFile(const std::filesystem::path& path) {
         std::ifstream file(path, std::ios::binary);
@@ -199,6 +207,10 @@ private:
     }
 
     static std::string readDocumentXml(const std::filesystem::path& path) {
+        return readDocxEntry(path, "word/document.xml");
+    }
+
+    static std::string readDocxEntry(const std::filesystem::path& path, const char* entryName) {
         auto docx = readFile(path);
 
         void* memStream = mz_stream_mem_create();
@@ -224,12 +236,12 @@ private:
             throw std::runtime_error("Failed to open DOCX ZIP");
         }
 
-        if (mz_zip_locate_entry(zipHandle, "word/document.xml", 0) != MZ_OK) {
+        if (mz_zip_locate_entry(zipHandle, entryName, 0) != MZ_OK) {
             mz_zip_close(zipHandle);
             mz_zip_delete(&zipHandle);
             mz_stream_close(memStream);
             mz_stream_mem_delete(&memStream);
-            throw std::runtime_error("word/document.xml was not found in DOCX");
+            throw std::runtime_error(std::string(entryName) + " was not found in DOCX");
         }
 
         if (mz_zip_entry_read_open(zipHandle, 0, nullptr) != MZ_OK) {
@@ -237,7 +249,7 @@ private:
             mz_zip_delete(&zipHandle);
             mz_stream_close(memStream);
             mz_stream_mem_delete(&memStream);
-            throw std::runtime_error("Failed to open word/document.xml");
+            throw std::runtime_error(std::string("Failed to open ") + entryName);
         }
 
         std::vector<std::uint8_t> output(8192);
@@ -301,11 +313,11 @@ TEST_F(DocReaderFixture, SplitDocumentTest) {
     auto res = walker.result;
 
     ASSERT_EQ(res.size(), 3);
-    EXPECT_EQ(res[0].title, "1 ПОСТРОЕНИЕ ИНФОЛОГИЧЕСКОЙ КОНЦЕПТУАЛЬНОЙ МОДЕЛИ  ");
+    EXPECT_EQ(res[0].title, "построение инфологической концептуальной модели");
     EXPECT_TRUE(res[0].text.empty());
-    EXPECT_EQ(res[1].title, "2 ПОСТРОЕНИЕ СХЕМЫ РЕЛЯЦИОННОЙ БАЗЫ ДАННЫХ");
+    EXPECT_EQ(res[1].title, "построение схемы реляционной базы данных");
     EXPECT_TRUE(res[1].text.empty());
-    EXPECT_EQ(res[2].title, "3 СОЗДАНИЕ СПРОЕКТИРОВАННОЙ БАЗЫ ДАННЫХ");
+    EXPECT_EQ(res[2].title, "создание спроектированной базы данных");
     EXPECT_TRUE(res[2].text.empty());
 }
 
@@ -334,10 +346,10 @@ TEST_F(DocReaderFixture, SplitNewDocumentTest) {
     auto res = walker.result;
 
     ASSERT_GE(res.size(), 9);
-    EXPECT_EQ(res[0].title, "ВВЕДЕНИЕ");
-    EXPECT_EQ(res[1].title, "1 Построение инфологической концептуальной модели ");
-    EXPECT_EQ(res[2].title, "2 Построение схемы реляционной базы данных");
-    EXPECT_EQ(res[3].title, "3 Создание спроектированной базы данных  ");
+    EXPECT_EQ(res[0].title, "введение");
+    EXPECT_EQ(res[1].title, "построение инфологической концептуальной модели");
+    EXPECT_EQ(res[2].title, "построение схемы реляционной базы данных");
+    EXPECT_EQ(res[3].title, "создание спроектированной базы данных");
 }
 
 TEST_F(DocReaderFixture, ComparePz1AndPz2SectionsTest) {
@@ -354,5 +366,141 @@ TEST_F(DocReaderFixture, ComparePz1AndPz2SectionsTest) {
         EXPECT_EQ(pz1Sections[i].title, pz2Sections[i].title);
         EXPECT_FALSE(pz1Sections[i].text.empty());
         EXPECT_FALSE(pz2Sections[i].text.empty());
+    }
+}
+
+TEST_F(DocReaderFixture, ReadsTopLevelHeadingStylesFromDocxStyles) {
+    const auto testDir = std::filesystem::path(TEST_DOC_DIR) / "TEST";
+    const auto pz1Styles = DocReader::parseStyles(readDocxEntryFixture(testDir / "PZ_1.docx", "word/styles.xml"));
+    const auto pz4Styles = DocReader::parseStyles(readDocxEntryFixture(testDir / "PZ_4.docx", "word/styles.xml"));
+
+    EXPECT_TRUE(pz1Styles.topLevelHeadingStyles.contains("a"));
+    EXPECT_TRUE(pz1Styles.topLevelHeadingStyles.contains("10"));
+    EXPECT_FALSE(pz1Styles.topLevelHeadingStyles.contains("aff2"));
+
+    EXPECT_FALSE(pz4Styles.topLevelHeadingStyles.contains("Heading1"));
+}
+
+TEST_F(DocReaderFixture, TestFolderDocxHasExpectedTopLevelSections) {
+    const auto testDir = std::filesystem::path(TEST_DOC_DIR) / "TEST";
+    const std::vector<std::pair<std::filesystem::path, std::vector<std::string>>> cases {
+        {
+            "PZ_1.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование программы",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+                "приложение б",
+                "приложение в",
+            },
+        },
+        {
+            "PZ_2.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задачи",
+                "проектирование программы",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение б",
+                "приложение в",
+            },
+        },
+        {
+            "PZ_3.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование приложения",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+                "приложение б",
+                "приложение в",
+            },
+        },
+        {
+            "PZ_4.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование приложения",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+                "приложение б",
+                "приложение в",
+            },
+        },
+        {
+            "PZ_5.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование программы",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+                "приложение б",
+                "приложение в",
+                "приложение г",
+            },
+        },
+        {
+            "PZ_6.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование программы",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+                "приложение б",
+                "приложение в",
+            },
+        },
+        {
+            "PZ_7.docx",
+            {
+                "введение",
+                "анализ исходных данных и постановка задач",
+                "проектирование",
+                "реализация программы",
+                "тестирование программы",
+                "заключение",
+                "список использованных источников",
+                "приложение а",
+            },
+        },
+    };
+
+    for (const auto& [docxFile, expectedTitles] : cases) {
+        SCOPED_TRACE("file: " + docxFile.string());
+
+        auto docx = readBinaryFile(testDir / docxFile);
+        auto paragraphs = DocReader::zipReader(std::span<unsigned char>(docx));
+        ASSERT_TRUE(paragraphs.has_value());
+
+        ASSERT_EQ(paragraphs->size(), expectedTitles.size());
+
+        for (std::size_t sectionIndex = 0; sectionIndex < expectedTitles.size(); ++sectionIndex) {
+            SCOPED_TRACE("section index: " + std::to_string(sectionIndex));
+            EXPECT_EQ((*paragraphs)[sectionIndex].title, expectedTitles[sectionIndex]);
+        }
     }
 }
