@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Session/Session.hpp"
+#include "Session/SslSession.hpp"
 #include "Util/ConfigParser.hpp"
 
 #include <boost/asio.hpp>
@@ -30,7 +30,7 @@ public:
 private:
     enum RequesType {
         GetStudentAnalizis,
-        GetCourseList,
+        GetRefreshToken,
     };
 
     static const std::unordered_map<std::string, RequesType> changeReqToEnum;
@@ -44,7 +44,11 @@ private:
 
     asio::awaitable<void> doSession(ssl_stream stream);
     asio::awaitable<void> listen();
+
+
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> getRefreshTokenHandler(http::request<http::string_body> req);
 
 };
 }   // namespace Network

@@ -3,6 +3,8 @@
 #include <grpcpp/create_channel.h>
 #include "DocumentReader/DocReader.hpp"
 #include "Models/Document.hpp"
+#include "Session/SimpleSession.hpp"
+
 #include <boost/json.hpp>
 
 #include <string_view>
@@ -13,12 +15,9 @@ constexpr std::string_view GOOGLE_HOST = "www.googleapis.com";
 
 namespace Network {
 Server::Server(
-    asio::io_context& io, const std::string& address, const std::string& port,
-    const std::string& cert_file, const std::string& private_key_file)
-  : ioc_(io)
-  , address_(address)
-  , port_(port)
-  , ssl_ctx_(asio::ssl::context::tlsv12_server) {
+    asio::io_context& io, const std::string& address, const std::string& port, const std::string& cert_file,
+    const std::string& private_key_file)
+  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server) {
     ssl_ctx_.set_options(
         asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
         asio::ssl::context::single_dh_use);
@@ -30,7 +29,7 @@ Server::Server(
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
 const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnum = {
-    { "/api/analyze", GetStudentAnalizis }, { "/api/courses", GetCourseList }
+    { "/api/analyze", GetStudentAnalizis }, { "/api/getRefreshToken", GetRefreshToken }
 };
 
 asio::awaitable<void> Server::doSession(ssl_stream stream) {
@@ -51,6 +50,7 @@ asio::awaitable<void> Server::doSession(ssl_stream stream) {
             http::response<http::string_body> res = co_await requestHandler(std::move(req));
 
             beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(10));
+            res.set(http::field::access_control_allow_origin, "*");
             co_await http::async_write(stream, res, asio::use_awaitable);
 
             if (res.need_eof()) {
@@ -91,10 +91,32 @@ asio::awaitable<void> Server::listen() {
 }
 
 asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::request<http::string_body> req) {
-
-    if (req.target() != "/api/analyze") {
-        co_return http::response<http::string_body>{http::status::bad_request, req.version()};
+    if (req.method() == http::verb::options) {
+        http::response<http::string_body> res{http::status::no_content, req.version()};
+        res.set(http::field::access_control_allow_methods, "POST, GET, OPTIONS");
+        res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+        co_return res;
     }
+
+    std::string target = req.target();
+
+    auto it = changeReqToEnum.find(target);
+    if (it == changeReqToEnum.end()) {
+        co_return http::response<http::string_body> { http::status::not_found, req.version() };
+    }
+
+    switch (auto&& [_, value] = *it; value) {
+        case GetStudentAnalizis:
+            if (req.method() == http::verb::post) {
+                co_return co_await analyzesHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::bad_request, req.version() };
+        case GetRefreshToken:
+            co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
+    }
+}
+
+asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http::request<http::string_body> req) {
     std::vector<Document> doc_vec;
 
     auto json_data = boost::json::parse(req.body());
@@ -104,25 +126,39 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
         auto file_id = std::string(file_obj.at("file_id").as_string());
         auto file_url = std::string(file_obj.at("file_url").as_string());
 
-        auto session = std::make_shared<Session>(ioc_);
+        auto session = std::make_shared<SslSession>(ioc_);
 
-        http::request<http::string_body> g_req{http::verb::get, "/drive/v3/files/" + file_id + "?alt=media", 11};
+        auto auth_header = req[http::field::authorization];
+        http::request<http::string_body> g_req { http::verb::get, "/drive/v3/files/" + file_id + "?alt=media", 11 };
         g_req.set(http::field::authorization, req[http::field::authorization]);
         g_req.set(http::field::host, GOOGLE_HOST);
         g_req.keep_alive(req.keep_alive());
 
+        std::println(std::cout, "Попытка скачать файл {}. Токен: {}", file_id, std::string(auth_header));
+
         auto g_res = co_await session->downloadWithRedirect(g_req);
+
+        if (g_res.result() != http::status::ok) {
+            std::string temp = std::string(g_res.body().begin(), g_res.body().end());
+
+            std::println(std::cerr, "ОШИБКА СКАЧИВАНИЯ {}: Код {}. Тело: {}",
+                         file_id,
+                         static_cast<unsigned>(g_res.result()),
+                         std::string(g_res.body().begin(), g_res.body().end()));
+            co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
+        }
+
 
         auto text = DocReader::zipReader(g_res.body());
 
         if (!text.has_value()) {
-            co_return http::response<http::string_body>{http::status::service_unavailable, req.version()};
+            co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
         }
 
         doc_vec.emplace_back(std::move(text.value()), file_id);
     }
 
-    http::request<http::string_body> request{ http::verb::post , "/analysis", req.version() };
+    http::request<http::string_body> request { http::verb::post, "/analysis", req.version() };
 
     boost::json::array obj_array;
 
@@ -136,11 +172,16 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
     request.set(http::field::host, config["ML_SERVER_HOST"]);
     request.prepare_payload();
 
-    auto session = std::make_shared<Session>(ioc_);
+    auto session = std::make_shared<SimpleSession>(ioc_);
     auto res_message = co_await session->sendRequest<http::string_body>(request);
 
-    http::response<http::string_body> res{http::status::ok, req.version()};
+    http::response<http::string_body> res { http::status::ok, req.version() };
     res.body() = res_message.body();
+    res.set(http::field::access_control_allow_origin, "*");
     co_return res;
+}
+asio::awaitable<http::response<http::string_body>>
+Server::getRefreshTokenHandler(http::request<http::string_body> req) {
+
 }
 }   // namespace Network

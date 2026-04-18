@@ -2,12 +2,11 @@
 // Created by mimixtop on 26.12.2025.
 //
 
-#include "Session.hpp"
+#include "SslSession.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
-#include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <openssl/err.h>
 #include <boost/stacktrace.hpp>
@@ -23,14 +22,14 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
 namespace Network {
-Session::Session(asio::io_context& ioc) : resolver_(ioc), stream_(ioc, ctx_) {
+SslSession::SslSession(asio::io_context& ioc) : resolver_(ioc), stream_(ioc, ctx_) {
     ctx_.set_default_verify_paths();
     ctx_.set_verify_mode(asio::ssl::context::verify_none);
 }
 
-bool Session::is_connected() const { return beast::get_lowest_layer(stream_).socket().is_open(); }
+bool SslSession::is_connected() const { return beast::get_lowest_layer(stream_).socket().is_open(); }
 
-asio::awaitable<void> Session::connectToSender(const std::string host, const std::string port) {
+asio::awaitable<void> SslSession::connectToSender(const std::string host, const std::string port) {
     try {
         if (is_connected() && host == host_ && port == port_) {
             co_return;
@@ -63,7 +62,7 @@ asio::awaitable<void> Session::connectToSender(const std::string host, const std
     }
 }
 
-asio::awaitable<void> Session::stopConnectToSender() {
+asio::awaitable<void> SslSession::stopConnectToSender() {
     try {
         if (is_connected()) {
             beast::get_lowest_layer(stream_).expires_after(std::chrono::seconds(5));
@@ -85,7 +84,7 @@ asio::awaitable<void> Session::stopConnectToSender() {
 }
 
 template <typename T>
-asio::awaitable<http::response<T>> Session::sendRequest(http::request<http::string_body> req) {
+asio::awaitable<http::response<T>> SslSession::sendRequest(http::request<http::string_body> req) {
     try {
         auto hostHeader = std::string(req[http::field::host]);
 
@@ -123,7 +122,7 @@ asio::awaitable<http::response<T>> Session::sendRequest(http::request<http::stri
 }
 
 asio::awaitable<http::response<http::vector_body<unsigned char>>>
-Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedirect) {
+SslSession::downloadWithRedirect(http::request<http::string_body> req, int maxRedirect) {
     int redirectCount = 0;
 
     while (redirectCount < maxRedirect) {
@@ -192,10 +191,10 @@ Session::downloadWithRedirect(http::request<http::string_body> req, int maxRedir
     throw std::runtime_error("Too many redirects");
 }
 
-template asio::awaitable<http::response<http::string_body>> Session::sendRequest<http::string_body>(
+template asio::awaitable<http::response<http::string_body>> SslSession::sendRequest<http::string_body>(
     http::request<http::string_body>);
 
 template asio::awaitable<http::response<http::vector_body<unsigned char>>>
-    Session::sendRequest<http::vector_body<unsigned char>>(http::request<http::string_body>);
+    SslSession::sendRequest<http::vector_body<unsigned char>>(http::request<http::string_body>);
 
 }   // namespace Network

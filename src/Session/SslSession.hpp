@@ -3,10 +3,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/ssl.hpp>
-#include <boost/beast/http/dynamic_body_fwd.hpp>
-#include <boost/beast/http/empty_body.hpp>
 #include <boost/beast/http/message_fwd.hpp>
-#include <boost/beast/http/message_generator.hpp>
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <string>
 #include <boost/beast/core/flat_buffer.hpp>
@@ -14,11 +11,11 @@
 #include <boost/beast/http/vector_body.hpp>
 
 namespace Network {
-class Session {
+class SslSession {
 public:
-    Session(boost::asio::io_context& ioc);
+    explicit SslSession(boost::asio::io_context& ioc);
 
-    ~Session() = default;
+    ~SslSession() = default;
 
     boost::asio::awaitable<void> connectToSender(const std::string host, const std::string port);
     boost::asio::awaitable<void> stopConnectToSender();

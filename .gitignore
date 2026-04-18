@@ -47,3 +47,5 @@ server.crt
 server.key
 
 .env
+/cmake-build-debug
+/test/doc
