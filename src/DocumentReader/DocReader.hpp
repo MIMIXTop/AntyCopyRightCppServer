@@ -13,6 +13,8 @@ std::optional<std::vector<Documents::Paragraph>> zipReader(std::span<unsigned ch
 
 std::vector<std::string> splitText(const std::string& text);
 
+std::optional<std::vector<Documents::Paragraph>> DocumentReaderFromRaw(std::span<unsigned char> data,const std::string& type);
+
 std::vector<Documents::Paragraph> DocxReader(std::string_view xml);
 std::vector<Documents::Paragraph> DocxReader(std::string_view xml,
                                              const DocumentStyles& styles,

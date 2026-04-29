@@ -240,6 +240,10 @@ bool SegmentDocWalker::endsWithPageNumber(std::string_view text) {
         --i;
     }
 
+    while (i > 0 && isAsciiSpace(text[i - 1])) {
+        --i;
+    }
+
     return i > 0 && !isAsciiSpace(text[i - 1]);
 }
 
@@ -437,7 +441,8 @@ void SegmentPdfWalker::pushParagraph(std::string_view text) {
 
     const auto check = checkText(text);
     const bool isHeading = !looksLikeManualTocRow(text) && check.hasLetter && check.hasCyrillic &&
-                           check.isUpperCaseCompatible && looksLikeTopLevelHeadingText(text);
+                           (startsWithKnownUnnumberedHeading(text) ||
+                            (check.isUpperCaseCompatible && startsWithTopLevelNumberedHeading(text)));
     if (isHeading) {
         flushSection();
         currentSection.title = normalizeTitle(text);
@@ -465,16 +470,58 @@ bool SegmentPdfWalker::looksLikeTopLevelHeadingText(std::string_view text) {
         return false;
     }
 
-    return startsWithTopLevelNumberedHeading(trimmed) || startsWithAny(trimmed, {
+    return startsWithTopLevelNumberedHeading(trimmed) || startsWithKnownUnnumberedHeading(trimmed);
+}
+
+bool SegmentPdfWalker::startsWithKnownUnnumberedHeading(std::string_view text) {
+    text = trim(text);
+    return startsWithAny(text, {
                "ВВЕДЕНИЕ",
-               "Введение",
                "ЗАКЛЮЧЕНИЕ",
                "Заключение",
                "СПИСОК",
-               "Список",
-               "ПРИЛОЖЕНИЕ",
-               "Приложение",
-           });
+               "Список использованных",
+           }) ||
+           startsWithAppendixHeading(text);
+}
+
+bool SegmentPdfWalker::startsWithAppendixHeading(std::string_view text) {
+    constexpr std::string_view upperPrefix = "ПРИЛОЖЕНИЕ";
+    constexpr std::string_view titlePrefix = "Приложение";
+
+    std::size_t offset = std::string_view::npos;
+    if (text.starts_with(upperPrefix)) {
+        offset = upperPrefix.size();
+    } else if (text.starts_with(titlePrefix)) {
+        offset = titlePrefix.size();
+    } else {
+        return false;
+    }
+
+    while (offset < text.size() && isAsciiSpace(text[offset])) {
+        ++offset;
+    }
+
+    if (offset >= text.size()) {
+        return false;
+    }
+
+    int32_t i = static_cast<int32_t>(offset);
+    const int32_t length = static_cast<int32_t>(text.length());
+    const auto* data = reinterpret_cast<const uint8_t*>(text.data());
+    UChar32 appendixLetter = 0;
+    U8_NEXT(data, i, length, appendixLetter);
+    if (appendixLetter < 0 || !u_isalpha(appendixLetter) || !u_isupper(appendixLetter)) {
+        return false;
+    }
+
+    if (i >= length) {
+        return true;
+    }
+
+    UChar32 next = 0;
+    U8_NEXT(data, i, length, next);
+    return next == '(' || u_isspace(next);
 }
 
 bool SegmentPdfWalker::startsWithTopLevelNumberedHeading(std::string_view text) {
@@ -539,6 +586,10 @@ bool SegmentPdfWalker::endsWithPageNumber(std::string_view text) {
 
     std::size_t i = text.size();
     while (i > 0 && text[i - 1] >= '0' && text[i - 1] <= '9') {
+        --i;
+    }
+
+    while (i > 0 && isAsciiSpace(text[i - 1])) {
         --i;
     }
 

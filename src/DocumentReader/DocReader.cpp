@@ -336,6 +336,17 @@ std::optional<std::vector<Documents::Paragraph>> DocReader::zipReader(std::span<
 
 std::vector<std::string> DocReader::splitText(const std::string& text) { return std::vector<std::string>(); }
 
+std::optional<std::vector<Documents::Paragraph>>
+DocReader::DocumentReaderFromRaw(std::span<unsigned char> data, const std::string& type) {
+    if (type == "docx") {
+        return zipReader(data);
+    }
+    if (type == "pdf") {
+        return PdfReader(data);
+    }
+    return std::nullopt;
+}
+
 std::vector<Documents::Paragraph> DocReader::DocxReader(const std::string_view xml) {
     pugi::xml_document doc;
     const std::string documentXml(xml);
@@ -375,6 +386,8 @@ std::vector<Documents::Paragraph> DocReader::PdfReader(std::span<unsigned char> 
         auto utf_8 = page->text().to_utf8();
 
         std::string text(utf_8.data(), utf_8.size());
+        
+
         walker.pushText(text);
     }
 

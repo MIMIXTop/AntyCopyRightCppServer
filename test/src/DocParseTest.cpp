@@ -352,6 +352,31 @@ TEST_F(DocReaderFixture, SplitsPz1PdfIntoSections) {
     EXPECT_EQ(paragraphs[4].title, "тестирование программы");
 }
 
+TEST_F(DocReaderFixture, SplitsPz3PdfIntoSections) {
+    auto pdf = readPdfTestFile("PZ3.pdf");
+    ASSERT_FALSE(pdf.empty());
+
+    auto paragraphs = DocReader::PdfReader(std::span(pdf));
+    const std::vector<std::string> expectedTitles {
+        "введение",
+        "анализ исходных данных и постановка задач",
+        "проектирование программы",
+        "реализация программы",
+        "тестирование программы",
+        "заключение",
+        "список использованных источников",
+        "приложение а",
+        "приложение б",
+        "приложение в",
+    };
+
+    ASSERT_EQ(paragraphs.size(), expectedTitles.size());
+    for (std::size_t i = 0; i < expectedTitles.size(); ++i) {
+        SCOPED_TRACE("section index: " + std::to_string(i));
+        EXPECT_EQ(paragraphs[i].title, expectedTitles[i]);
+    }
+}
+
 TEST_F(DocReaderFixture, PdfAndDocxParsersProduceSameSections) {
     auto pdf = readPdfTestFile("PZ1.pdf");
     ASSERT_FALSE(pdf.empty());

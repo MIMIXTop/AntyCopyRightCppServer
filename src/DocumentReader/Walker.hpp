@@ -89,6 +89,8 @@ private:
     void flushSection();
 
     static bool looksLikeTopLevelHeadingText(std::string_view text);
+    static bool startsWithKnownUnnumberedHeading(std::string_view text);
+    static bool startsWithAppendixHeading(std::string_view text);
     static bool startsWithTopLevelNumberedHeading(std::string_view text);
     static bool startsWithAny(std::string_view text, std::initializer_list<std::string_view> prefixes);
     static std::string_view trim(std::string_view text);

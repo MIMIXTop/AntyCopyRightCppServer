@@ -125,6 +125,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
         const auto& file_obj = item.at("file");
         auto file_id = std::string(file_obj.at("file_id").as_string());
         auto file_url = std::string(file_obj.at("file_url").as_string());
+        auto file_type = std::string(file_obj.at("file_type").as_string());
 
         auto session = std::make_shared<SslSession>(ioc_);
 
@@ -148,8 +149,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
             co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
         }
 
-
-        auto text = DocReader::zipReader(g_res.body());
+        auto text = DocReader::DocumentReaderFromRaw(g_res.body(), file_type);
 
         if (!text.has_value()) {
             co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
@@ -180,6 +180,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
     res.set(http::field::access_control_allow_origin, "*");
     co_return res;
 }
+
 asio::awaitable<http::response<http::string_body>>
 Server::getRefreshTokenHandler(http::request<http::string_body> req) {
 
