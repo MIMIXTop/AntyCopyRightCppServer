@@ -181,6 +181,10 @@ protected:
         return walker.result;
     }
 
+    static std::vector<unsigned char> readPdfTestFile(const std::string& doc) {
+        return readBinaryFile(std::filesystem::path(TEST_DOC_DIR) / doc);
+    }
+
     static std::vector<unsigned char> readBinaryFile(const std::filesystem::path& path) { return readFile(path); }
 
     static std::string readDocxEntryFixture(const std::filesystem::path& path, const char* entryName) {
@@ -319,6 +323,56 @@ TEST_F(DocReaderFixture, SplitDocumentTest) {
     EXPECT_TRUE(res[1].text.empty());
     EXPECT_EQ(res[2].title, "создание спроектированной базы данных");
     EXPECT_TRUE(res[2].text.empty());
+}
+
+TEST_F(DocReaderFixture, ReadsParsTextPdf) {
+    auto pdf = readPdfTestFile("ParsTextTest.pdf");
+    ASSERT_FALSE(pdf.empty());
+
+    auto paragraphs = DocReader::PdfReader(std::span(pdf));
+    ASSERT_EQ(paragraphs.size(), 3);
+
+    EXPECT_EQ(paragraphs[0].title, "построение инфологической концептуальной модели");
+    EXPECT_EQ(paragraphs[1].title, "построение схемы реляционной базы данных");
+    EXPECT_EQ(paragraphs[2].title, "создание спроектированной базы данных");
+}
+
+TEST_F(DocReaderFixture, SplitsPz1PdfIntoSections) {
+    auto pdf = readPdfTestFile("PZ1.pdf");
+    ASSERT_FALSE(pdf.empty());
+
+    auto paragraphs = DocReader::PdfReader(std::span(pdf));
+    ASSERT_GE(paragraphs.size(), 7);
+
+    EXPECT_EQ(paragraphs[0].title, "введение");
+    EXPECT_FALSE(paragraphs[0].text.empty());
+    EXPECT_EQ(paragraphs[1].title, "анализ исходных данных и постановка задач");
+    EXPECT_EQ(paragraphs[2].title, "проектирование");
+    EXPECT_EQ(paragraphs[3].title, "реализация программы");
+    EXPECT_EQ(paragraphs[4].title, "тестирование программы");
+}
+
+TEST_F(DocReaderFixture, PdfAndDocxParsersProduceSameSections) {
+    auto pdf = readPdfTestFile("PZ1.pdf");
+    ASSERT_FALSE(pdf.empty());
+
+    auto pdfDoc = DocReader::PdfReader(std::span(pdf));
+
+    ASSERT_FALSE(pz1DocumentXml.empty());
+    pugi::xml_document doc;
+    ASSERT_TRUE(doc.load_string(pz1DocumentXml.c_str(), pugi::parse_default | pugi::parse_ws_pcdata));
+    Walker::SegmentDocWalker walker;
+    doc.traverse(walker);
+    auto docxDoc = walker.result;
+
+    ASSERT_EQ(docxDoc.size(), pdfDoc.size());
+
+    for (std::size_t i = 0; i < pdfDoc.size(); i++) {
+        SCOPED_TRACE("section index: " + std::to_string(i));
+        EXPECT_EQ(pdfDoc[i].title, docxDoc[i].title);
+        EXPECT_FALSE(pdfDoc[i].text.empty());
+        EXPECT_FALSE(docxDoc[i].text.empty());
+    }
 }
 
 TEST_F(DocReaderFixture, SplitTrueDocumentTest) {

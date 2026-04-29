@@ -16,6 +16,7 @@ find_package(gRPC CONFIG REQUIRED)
 find_package(ICU REQUIRED COMPONENTS uc)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PQXX REQUIRED libpqxx)
+pkg_check_modules(POPPLER_CPP REQUIRED IMPORTED_TARGET poppler-cpp)
 
 FetchContent_Declare(
         googletest
@@ -52,7 +53,6 @@ target_include_directories(${PROJECT_NAME}_lib PUBLIC
         $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}>
 )
 
-# Линкуем все зависимости к библиотеке
 target_link_libraries(${PROJECT_NAME}_lib PUBLIC
         Boost::headers
         Boost::json
@@ -64,16 +64,12 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
         minizip
         ${PQXX_LIBRARIES}
         ICU::uc
+        PkgConfig::POPPLER_CPP
 )
 
-
-
-# 6. СОЗДАНИЕ ИСПОЛНЯЕМОГО ФАЙЛА
 add_executable(${PROJECT_NAME} src/main.cpp)
 target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
 
-# 7. ПОДКЛЮЧЕНИЕ ТЕСТОВ (ОБЯЗАТЕЛЬНО В КОНЦЕ!)
-# Теперь папка test/ "видит" таргет ${PROJECT_NAME}_lib и может с ним слинковаться
 if(BUILD_TESTING OR NOT DEFINED BUILD_TESTING)
     enable_testing()
     add_subdirectory(test)
