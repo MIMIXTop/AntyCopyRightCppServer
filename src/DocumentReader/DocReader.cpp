@@ -1,6 +1,9 @@
 #include "DocReader.hpp"
 
 #include "Walker.hpp"
+#include "PdfDocumentFromMemory.hpp"
+#include <poppler/cpp/poppler-document.h>
+#include <poppler/cpp/poppler-page.h>
 
 #include <pugixml.hpp>
 
@@ -12,6 +15,7 @@
 #include <mz_strm.h>
 #include <mz_strm_mem.h>
 #include <mz_zip.h>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -273,14 +277,6 @@ std::optional<std::string> readZipEntry(void* zipHandle, const char* entryName) 
 }
 }  // namespace
 
-std::optional<std::string> DocReader::xmlReader(std::string&& xml) {
-    pugi::xml_document doc;
-    doc.load_string(xml.c_str(), pugi::parse_default | pugi::parse_ws_pcdata);
-    Walker::DocWalker walker;
-    doc.traverse(walker);
-    return walker.result;
-}
-
 std::optional<std::vector<Documents::Paragraph>> DocReader::zipReader(std::span<unsigned char> zip) {
     void* memStream = nullptr;
     void* zipHandle = nullptr;
@@ -361,5 +357,27 @@ std::vector<Documents::Paragraph> DocReader::DocxReader(const std::string_view x
     const bool allowTocTitleMatching = topLevelHeadingStyles.empty() && !topLevelTocTitles.empty();
     Walker::SegmentDocWalker walker(std::move(topLevelHeadingStyles), std::move(topLevelTocTitles), allowTocTitleMatching);
     doc.traverse(walker);
+    return walker.result;
+}
+
+std::vector<Documents::Paragraph> DocReader::PdfReader(std::span<unsigned char> pdf) {
+    auto rawDocument = PdfDocumentFromMemory(pdf);
+
+    auto& document = rawDocument.document();
+    Walker::SegmentPdfWalker walker;
+
+    for (int i = 0; i < document.pages(); i++) {
+        std::unique_ptr<poppler::page> page(document.create_page(i));
+        if (!page) {
+            continue;
+        }
+
+        auto utf_8 = page->text().to_utf8();
+
+        std::string text(utf_8.data(), utf_8.size());
+        walker.pushText(text);
+    }
+
+    walker.finish();
     return walker.result;
 }
