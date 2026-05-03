@@ -1,5 +1,7 @@
 #pragma once
 
+#include "DocumentReader/Paragraph.hpp"
+#include "Models/Document.hpp"
 #include "Session/SslSession.hpp"
 #include "Util/ConfigParser.hpp"
 
@@ -33,6 +35,12 @@ private:
         GetRefreshToken,
     };
 
+    struct DocumentRequest {
+        http::request<http::string_body> req;
+        std::string id;
+        std::string file_type;
+    };
+
     static const std::unordered_map<std::string, RequesType> changeReqToEnum;
 
     asio::io_context& ioc_;
@@ -40,15 +48,24 @@ private:
     std::string port_;
     asio::ssl::context ssl_ctx_;
 
+    asio::thread_pool tp{std::thread::hardware_concurrency() / 2};
+
     Util::ConfigParser config;
 
     asio::awaitable<void> doSession(ssl_stream stream);
     asio::awaitable<void> listen();
 
-
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> getRefreshTokenHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> handle_document_request(std::vector<DocumentRequest> vreq, asio::any_io_executor cpu_ex);
+    asio::awaitable<void> download_extract_store(
+        DocumentRequest req,
+        asio::any_io_executor cpu_ex,
+        asio::strand<asio::any_io_executor> store_strand,
+        std::shared_ptr<std::vector<Document>> container);
+
+
 
 };
 }   // namespace Network
