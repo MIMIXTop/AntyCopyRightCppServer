@@ -11,8 +11,6 @@ include(FetchContent)
 
 find_package(Boost REQUIRED json thread url headers)
 find_package(OpenSSL REQUIRED)
-find_package(Protobuf CONFIG REQUIRED)
-find_package(gRPC CONFIG REQUIRED)
 find_package(ICU REQUIRED COMPONENTS uc)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PQXX REQUIRED libpqxx)

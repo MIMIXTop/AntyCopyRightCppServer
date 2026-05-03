@@ -386,7 +386,6 @@ std::vector<Documents::Paragraph> DocReader::PdfReader(std::span<unsigned char> 
         auto utf_8 = page->text().to_utf8();
 
         std::string text(utf_8.data(), utf_8.size());
-        
 
         walker.pushText(text);
     }
