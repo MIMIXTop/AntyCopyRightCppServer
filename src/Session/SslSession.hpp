@@ -13,7 +13,7 @@
 namespace Network {
 class SslSession {
 public:
-    explicit SslSession(boost::asio::io_context& ioc);
+    explicit SslSession(boost::asio::any_io_executor ioc);
 
     ~SslSession() = default;
 

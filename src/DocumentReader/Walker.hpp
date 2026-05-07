@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Paragraph.hpp"
+#include "../Models/Paragraph.hpp"
 
 #include <pugixml.hpp>
 

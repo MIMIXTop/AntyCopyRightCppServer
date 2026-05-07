@@ -1,7 +1,7 @@
 #pragma once
 
 #include "DocStyles.hpp"
-#include "Paragraph.hpp"
+#include "../Models/Paragraph.hpp"
 
 #include <optional>
 #include <span>

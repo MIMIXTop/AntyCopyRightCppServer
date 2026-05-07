@@ -17,7 +17,7 @@ using tcp = asio::ip::tcp;
 
 namespace Network {
 
-SimpleSession::SimpleSession(asio::io_context& ioc)
+SimpleSession::SimpleSession(asio::any_io_executor ioc)
     : resolver_(ioc), stream_(ioc) {
 }
 
@@ -41,7 +41,6 @@ asio::awaitable<void> SimpleSession::connectToSender(const std::string host, con
 
         auto result = co_await resolver_.async_resolve(host, port, asio::use_awaitable);
 
-        // В обычном HTTP мы подключаемся напрямую через tcp_stream
         stream_.expires_after(std::chrono::seconds(30));
         co_await stream_.async_connect(result, asio::use_awaitable);
         stream_.expires_never();
@@ -57,7 +56,6 @@ asio::awaitable<void> SimpleSession::stopConnectToSender() {
         if (is_connected()) {
             boost::system::error_code ec;
             
-            // Вместо SSL shutdown отправляем TCP shutdown
             stream_.socket().shutdown(tcp::socket::shutdown_both, ec);
             if (ec) {
                 std::println(std::cerr, "Socket shutdown error: {}", ec.message());

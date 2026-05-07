@@ -22,7 +22,7 @@ namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
 namespace Network {
-SslSession::SslSession(asio::io_context& ioc) : resolver_(ioc), stream_(ioc, ctx_) {
+SslSession::SslSession(asio::any_io_executor ioc) : resolver_(ioc), stream_(ioc, ctx_) {
     ctx_.set_default_verify_paths();
     ctx_.set_verify_mode(asio::ssl::context::verify_none);
 }
