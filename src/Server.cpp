@@ -29,6 +29,7 @@ Server::Server(
 
     ssl_ctx_.use_certificate_chain_file(cert_file);
     ssl_ctx_.use_private_key_file(private_key_file, asio::ssl::context::pem);
+    databaseSession = std::make_shared<DataBaseSession>();
 }
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
@@ -131,12 +132,15 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
     for (auto&& item : json_data.at("filesList").as_array()) {
         const auto& file_obj = item.at("file");
         auto file_id = std::string(file_obj.at("file_id").as_string());
+
+        auto&& result = co_await databaseSession->selectDocumentById(file_id);
+        if (result.has_value()) {
+            doc_vec.push_back(result.value());
+            continue;
+        }
+
         auto file_url = std::string(file_obj.at("file_url").as_string());
         auto file_type = std::string(file_obj.at("file_type").as_string());
-
-        auto session = std::make_shared<SslSession>(ioc_);
-
-        //auto auth_header = req[http::field::authorization];
         http::request<http::string_body> g_req { http::verb::get, "/drive/v3/files/" + file_id + "?alt=media", 11 };
         g_req.set(http::field::authorization, req[http::field::authorization]);
         g_req.set(http::field::host, GOOGLE_HOST);
@@ -145,7 +149,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
         req_vec.push_back({ .req = g_req, .id = file_id, .file_type = file_type });
     }
 
-    auto res = co_await handle_document_request(req_vec, tp.get_executor());
+    auto res = co_await handle_document_request(req_vec, doc_vec,tp.get_executor());
     co_return res;
 }
 
@@ -154,45 +158,55 @@ Server::getRefreshTokenHandler(http::request<http::string_body> req) {}
 
 
 asio::awaitable<http::response<http::string_body>>
-Server::handle_document_request(std::vector<DocumentRequest> vreq, asio::any_io_executor cpu_ex) {
-    auto net_ex = co_await asio::this_coro::executor;
-
+Server::handle_document_request(std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex) {
     auto container = std::make_shared<std::vector<Document>>();
 
-    auto stor_strand = asio::make_strand(asio::any_io_executor(net_ex));
+    if (!vreq.empty()){
+        auto net_ex = co_await asio::this_coro::executor;
 
-    auto make_op = [&](DocumentRequest document_request) {
-        return asio::co_spawn(
-            net_ex, download_extract_store(std::move(document_request), cpu_ex, stor_strand, container),
-            asio::deferred);
-    };
+        auto stor_strand = asio::make_strand(asio::any_io_executor(net_ex));
 
-    auto first = make_op(std::move(vreq.front()));
+        auto make_op = [&](DocumentRequest document_request) {
+            return asio::co_spawn(
+                net_ex, download_extract_store(std::move(document_request), cpu_ex, stor_strand, container),
+                asio::deferred);
+        };
 
-    using Op = decltype(first);
+        auto first = make_op(std::move(vreq.front()));
 
-    std::vector<Op> op_vec;
+        using Op = decltype(first);
 
-    op_vec.reserve(vreq.size());
-    op_vec.emplace_back(std::move(first));
+        std::vector<Op> op_vec;
 
-    for (std::size_t i = 1; i < vreq.size(); ++i) {
-        op_vec.emplace_back(make_op(std::move(vreq[i])));
-    }
+        op_vec.reserve(vreq.size());
+        op_vec.emplace_back(std::move(first));
 
-    auto group = X::make_parallel_group(std::move(op_vec));
+        for (std::size_t i = 1; i < vreq.size(); ++i) {
+            op_vec.emplace_back(make_op(std::move(vreq[i])));
+        }
 
-    auto [order, errors] = co_await std::move(group).async_wait(X::wait_for_all(), asio::use_awaitable);
+        auto group = X::make_parallel_group(std::move(op_vec));
 
-    for (const auto & i : errors) {
-        if (i) {
-            std::rethrow_exception(i);
+        auto [order, errors] = co_await std::move(group).async_wait(X::wait_for_all(), asio::use_awaitable);
+
+        for (const auto & i : errors) {
+            if (i) {
+                std::rethrow_exception(i);
+            }
+        }
+
+        for (auto&& doc : *container) {
+            co_await databaseSession->insertDocument(doc);
         }
     }
 
     http::request<http::string_body> request { http::verb::post, "/analysis", 11 };
 
     boost::json::array obj_array;
+
+    if (!cache_docs.empty()) {
+        container->insert_range(container->end(), cache_docs);
+    }
 
     for (auto&& item : *container) {
         boost::json::value jv = boost::json::value_from(item);
@@ -204,7 +218,7 @@ Server::handle_document_request(std::vector<DocumentRequest> vreq, asio::any_io_
     request.set(http::field::host, config["ML_SERVER_HOST"]);
     request.prepare_payload();
 
-    auto session = std::make_shared<SimpleSession>(ioc_);
+    auto session = std::make_shared<SimpleSession>(ioc_.get_executor());
     auto res_message = co_await session->sendRequest<http::string_body>(request);
 
     http::response<http::string_body> res { http::status::ok, 11 };
@@ -216,7 +230,7 @@ Server::handle_document_request(std::vector<DocumentRequest> vreq, asio::any_io_
 asio::awaitable<void> Server::download_extract_store(
     DocumentRequest req, asio::any_io_executor cpu_ex, asio::strand<asio::any_io_executor> store_strand,
     std::shared_ptr<std::vector<Document>> container) {
-    auto download_session = std::make_shared<SslSession>(ioc_);
+    auto download_session = std::make_shared<SslSession>(ioc_.get_executor());
     auto doc_req = co_await download_session->downloadWithRedirect(req.req);
 
     std::println(std::cout, "Попытка скачать файл {}.", req.id);

@@ -12,7 +12,7 @@ namespace Network {
 
 class SimpleSession {
 public:
-    SimpleSession(boost::asio::io_context& ioc);
+    SimpleSession(boost::asio::any_io_executor ioc);
 
     ~SimpleSession() = default;
 

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "DocumentReader/Paragraph.hpp"
+#include "Models/Paragraph.hpp"
 #include "Models/Document.hpp"
+#include "Session/DataBaseSession.hpp"
 #include "Session/SslSession.hpp"
 #include "Util/ConfigParser.hpp"
 
@@ -49,6 +50,7 @@ private:
     asio::ssl::context ssl_ctx_;
 
     asio::thread_pool tp{std::thread::hardware_concurrency() / 2};
+    std::shared_ptr<DataBaseSession> databaseSession;
 
     Util::ConfigParser config;
 
@@ -58,7 +60,7 @@ private:
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> getRefreshTokenHandler(http::request<http::string_body> req);
-    asio::awaitable<http::response<http::string_body>> handle_document_request(std::vector<DocumentRequest> vreq, asio::any_io_executor cpu_ex);
+    asio::awaitable<http::response<http::string_body>> handle_document_request(std::vector<DocumentRequest> vreq, std::span<Document> cache_docs , asio::any_io_executor cpu_ex);
     asio::awaitable<void> download_extract_store(
         DocumentRequest req,
         asio::any_io_executor cpu_ex,
