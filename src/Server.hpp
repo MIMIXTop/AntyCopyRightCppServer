@@ -60,9 +60,11 @@ private:
 
     asio::awaitable<void> doSession(ssl_stream stream);
     asio::awaitable<void> listen();
+    void applyCorsHeaders(http::response<http::string_body>& res) const;
 
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
+
     asio::awaitable<http::response<http::string_body>> authGoogleStartHandler(http::request<http::string_body> req);
 
     asio::awaitable<http::response<http::string_body>> authGoogleCallbackHandler(http::request<http::string_body> req);
