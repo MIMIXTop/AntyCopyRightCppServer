@@ -1,4 +1,6 @@
 #include "Server.hpp"
+#include "Server.hpp"
+#include "Server.hpp"
 
 #include "DocumentReader/DocReader.hpp"
 #include "Models/Document.hpp"
@@ -12,6 +14,7 @@
 #include <filesystem>
 #include <string_view>
 #include <iostream>
+#include <boost/url/url.hpp>
 
 constexpr std::string_view GOOGLE_CLASSROOM_HOST = "classroom.googleapis.com";
 constexpr std::string_view GOOGLE_HOST = "www.googleapis.com";
@@ -35,7 +38,12 @@ Server::Server(
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
 const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnum = {
-    { "/api/analyze", GetStudentAnalizis }, { "/api/getRefreshToken", GetRefreshToken }
+    { "/api/analyze", GetStudentAnalizis },
+    { "/api/getRefreshToken", GetRefreshToken },
+    { "api/auth/google/start", AuthGoogleStart },
+    { "api/auth/google/callback", AuthGoogleCallback },
+    { "api/auth/me", AuthMe },
+    { "api/auth/logout", AuthLogout },
 };
 
 asio::awaitable<void> Server::doSession(ssl_stream stream) {
@@ -104,7 +112,13 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
         co_return res;
     }
 
-    std::string target = req.target();
+    auto parsedTarget = boost::urls::parse_origin_form(req.target());
+
+    if (!parsedTarget) {
+        co_return http::response<http::string_body>{http::status::bad_request, req.version()};
+    }
+
+    std::string target = std::string(parsedTarget.value().path());
 
     auto it = changeReqToEnum.find(target);
     if (it == changeReqToEnum.end()) {
@@ -149,19 +163,15 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
         req_vec.push_back({ .req = g_req, .id = file_id, .file_type = file_type });
     }
 
-    auto res = co_await handle_document_request(req_vec, doc_vec,tp.get_executor());
+    auto res = co_await handle_document_request(req_vec, doc_vec, tp.get_executor());
     co_return res;
 }
 
-asio::awaitable<http::response<http::string_body>>
-Server::getRefreshTokenHandler(http::request<http::string_body> req) {}
-
-
-asio::awaitable<http::response<http::string_body>>
-Server::handle_document_request(std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex) {
+asio::awaitable<http::response<http::string_body>> Server::handle_document_request(
+    std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex) {
     auto container = std::make_shared<std::vector<Document>>();
 
-    if (!vreq.empty()){
+    if (!vreq.empty()) {
         auto net_ex = co_await asio::this_coro::executor;
 
         auto stor_strand = asio::make_strand(asio::any_io_executor(net_ex));
@@ -189,7 +199,7 @@ Server::handle_document_request(std::vector<DocumentRequest> vreq, std::span<Doc
 
         auto [order, errors] = co_await std::move(group).async_wait(X::wait_for_all(), asio::use_awaitable);
 
-        for (const auto & i : errors) {
+        for (const auto& i : errors) {
             if (i) {
                 std::rethrow_exception(i);
             }
