@@ -7,6 +7,8 @@
 #include <span>
 #include <stdexcept>
 #include <vector>
+#include <algorithm>
+#include <ranges>
 #include <cstddef>
 #include <boost/url/authority_view.hpp>
 #include <boost/url/url.hpp>
@@ -14,7 +16,18 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 
+#include <cryptopp/aes.h>
+#include <cryptopp/gcm.h>
+#include <cryptopp/filters.h>
+#include <cryptopp/osrng.h>
+#include <cryptopp/base64.h>
+
+
 namespace {
+
+constexpr int AEG_KEY_LEN = 32;
+constexpr int IV_LEN = 12;
+constexpr int TAG_LEN = 16;
 
 std::string base64UrlEncode(std::span<const unsigned char> data) {
     static constexpr char alphabet[] =
@@ -55,24 +68,10 @@ std::string byteToHex(std::span<const unsigned char> bytes) {
 
     return result;
 }
-
 }
 
 namespace util {
 
-std::string deriveUserKey(const std::string& userKey,const std::string serverKey) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-
-    SHA256_CTX sha256;
-    SHA256_Init(&sha256);
-
-    SHA256_Update(&sha256, serverKey.c_str(), serverKey.length());
-    SHA256_Update(&sha256, userKey.c_str(), userKey.length());
-
-    SHA256_Final(hash, &sha256);
-
-    return std::string(reinterpret_cast<const char*>(hash), SHA256_DIGEST_LENGTH);
-}
 std::string randomUrlSafeToken(std::size_t byteCount) {
     std::vector<unsigned char> data(byteCount);
 
@@ -105,6 +104,109 @@ std::string urlEncodeHelper(std::initializer_list<std::pair<std::string_view, st
     return u.query();
 
 }
+std::string textEncrypt(std::string_view text, std::string_view key) {
+    if (key.empty()) {
+        throw std::runtime_error("Invalid Key Length");
+    }
 
+    CryptoPP::AutoSeededRandomPool prng;
+
+    CryptoPP::byte iv[IV_LEN];
+    prng.GenerateBlock(iv, sizeof(iv));
+
+    std::string ciphertext;
+
+    try {
+        unsigned char keyBuffer[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(key.data()), key.size(), keyBuffer);
+
+        CryptoPP::GCM<CryptoPP::AES>::Encryption e;
+        e.SetKeyWithIV(reinterpret_cast<const CryptoPP::byte*>(keyBuffer), AEG_KEY_LEN, iv, sizeof(iv));
+
+        std::string input(text);
+        CryptoPP::StringSource ss1(
+            reinterpret_cast<const CryptoPP::byte*>(input.data()),
+            input.size(),
+            true,
+            new CryptoPP::AuthenticatedEncryptionFilter(
+                e, new CryptoPP::StringSink(ciphertext), false, TAG_LEN
+            )
+        );
+
+        std::string combined = std::string(reinterpret_cast<char*>(iv), IV_LEN) + ciphertext;
+
+        std::string encoded;
+        CryptoPP::StringSource ss2(
+            reinterpret_cast<const CryptoPP::byte*>(combined.data()),
+            combined.size(),
+            true,
+            new CryptoPP::Base64Encoder(
+                new CryptoPP::StringSink(encoded),
+                false
+            )
+        );
+
+        return encoded;
+
+    } catch (const CryptoPP::Exception& ex) {
+        throw std::runtime_error(std::string("Ошибка шифрования: ") + ex.what());
+    }
+}
+
+std::string textDecrypt(std::string_view text, std::string_view key) {
+    if (key.empty()) {
+        throw std::runtime_error("Invalid Key Length");
+    }
+
+    try {
+        std::string input(text);
+        std::string combined_binary;
+        CryptoPP::StringSource ss_base64(
+            reinterpret_cast<const CryptoPP::byte*>(input.data()),
+            input.size(),
+            true,
+            new CryptoPP::Base64Decoder(
+                new CryptoPP::StringSink(combined_binary)
+            )
+        );
+
+        if (combined_binary.size() < IV_LEN + TAG_LEN) {
+            throw std::runtime_error("Неверный формат или длина зашифрованных данных");
+        }
+
+        CryptoPP::byte iv[IV_LEN];
+        std::ranges::copy(combined_binary | std::views::take(IV_LEN), iv);
+        auto ciphertext_view = combined_binary | std::views::drop(IV_LEN);
+        std::string ciphertext(ciphertext_view.begin(), ciphertext_view.end());
+        std::string decoded;
+
+        CryptoPP::GCM<CryptoPP::AES>::Decryption dec;
+        unsigned char keyBuffer[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(key.data()), key.size(), keyBuffer);
+        dec.SetKeyWithIV(reinterpret_cast<const CryptoPP::byte*>(keyBuffer), AEG_KEY_LEN, iv, sizeof(iv));
+
+        CryptoPP::AuthenticatedDecryptionFilter df(
+            dec,
+            new CryptoPP::StringSink(decoded),
+            CryptoPP::AuthenticatedDecryptionFilter::DEFAULT_FLAGS,
+            TAG_LEN
+        );
+
+        CryptoPP::StringSource ss_decoded(
+            reinterpret_cast<const CryptoPP::byte*>(ciphertext.data()),
+            ciphertext.size(),
+            true,
+            new CryptoPP::Redirector(df)
+        );
+
+        if (!df.GetLastResult()) {
+            throw std::runtime_error("Данные были изменены или использован неверный ключ (провал проверки MAC)");
+        }
+
+        return decoded;
+    }  catch (const CryptoPP::Exception& ex) {
+        throw std::runtime_error(std::string("Ошибка расшифровки (возможно, неверный ключ или данные повреждены): ") + ex.what());
+    }
+}
 
 } // util

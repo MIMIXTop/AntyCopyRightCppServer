@@ -32,7 +32,6 @@ namespace {
         "profile"
     } ;
 
-
 }
 
 constexpr std::string_view GOOGLE_CLASSROOM_HOST = "classroom.googleapis.com";
@@ -64,6 +63,18 @@ const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnu
     { "/api/auth/me", AuthMe },
     { "/api/auth/logout", AuthLogout },
 };
+
+template <typename T>
+std::optional<std::string> Server::getCookie(const http::request<T>& req, std::string_view cookieName) {
+
+    for (auto&& [key, value] : http::param_list(req[http::field::cookie])) {
+        if (key == cookieName) {
+            return  value;
+        }
+    }
+
+    return std::nullopt;
+}
 
 void Server::applyCorsHeaders(http::response<http::string_body>& res) const {
     const auto appOrigin = config["APP_ORIGIN"];
@@ -291,9 +302,10 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
     }
 
     GoogleUserInfo client;
+    GoogleTokenResponse token;
     try {
         GoogleOAuthClient googleOAuthClient{ioc_.get_executor()};
-        auto token = co_await googleOAuthClient.exchangeCodeForTokens((*code).value);
+        token = co_await googleOAuthClient.exchangeCodeForTokens((*code).value);
         client = co_await googleOAuthClient.fetchUserInfo(token.accessToken);
     } catch (const std::exception& e) {
         std::println(std::cerr, "Google OAuth callback error: {}", e.what());
@@ -303,21 +315,166 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
         co_return res;
     }
 
-    http::response<http::string_body> res{http::status::ok, req.version()};
-    res.set(http::field::content_type, "application/json");
-    res.body() = boost::json::serialize(boost::json::value_from(client));
-    res.prepare_payload();
-    co_return res;
+    auto user = co_await databaseSession->selectAuthUserByGoogleSub(client.sub);
+    std::optional<AuthUser> authUser;
+    auto loginAt = util::time::getCurrentTimestamp();
+    if (!user.has_value()) {
+        authUser = co_await databaseSession->insertAuthUser(client.sub, client.email, client.name, client.pictureUrl, loginAt);
+    } else {
+        authUser = co_await databaseSession->updateAuthUserLogin(user->id, client.email, client.name, client.pictureUrl, loginAt);
+    }
+
+    if (!authUser.has_value()) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+
+    auto tokenEncryptionKey = std::string(config["TOKEN_ENCRYPTION_KEY"]);
+    if (tokenEncryptionKey.empty()) {
+        tokenEncryptionKey = std::string(config["SECRET_KEY"]);
+    }
+    if (tokenEncryptionKey.empty()) {
+        http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+        res.body() = "Token encryption key is missing";
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto access_token_enc = util::textEncrypt(token.accessToken, tokenEncryptionKey);
+    std::optional<std::string> refresh_token_enc;
+    if (token.refreshToken.has_value()) {
+        refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
+    } else {
+        refresh_token_enc = std::nullopt;
+    }
+
+    auto expiresAt = util::time::getCurrentTimeAfterSeconds(token.expiresIn);
+    auto res = co_await databaseSession->upsertGoogleOAuthTokens({
+        .userId = authUser->id,
+        .accessTokenEnc = access_token_enc,
+        .refreshTokenEnc = refresh_token_enc,
+        .expiresAt = expiresAt,
+        .scope = token.scope,
+        .tokenType = token.tokenType
+    });
+
+    if (!res) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+
+    auto sessionId = util::randomUrlSafeToken();
+    auto sessionHash = util::sha256Hex(sessionId);
+    auto sessionTtlDaysText = std::string(config["SESSION_TTL_DAYS"]);
+    if (sessionTtlDaysText.empty()) {
+        sessionTtlDaysText = "7";
+    }
+    auto sessionTtlDays = std::stoi(sessionTtlDaysText);
+    auto sessionMaxAge = sessionTtlDays * 24 * 60 * 60;
+    auto sessionExpiresAt = util::time::getCurrentTimeAfterMinutes(sessionTtlDays * 24 * 60);
+    std::string userAgent;
+
+    if (auto it = req.find(http::field::user_agent); it != req.end()) {
+        userAgent = std::string(it->value());
+    }
+    auto resAppSession = co_await databaseSession->insertAppSession(
+        "",
+        authUser->id,
+        sessionHash,
+        sessionExpiresAt,
+        userAgent
+    );
+
+    if (!resAppSession) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+    http::response<http::string_body> ress{http::status::found, req.version()};
+    ress.set(http::field::location, config["APP_ORIGIN"]);
+    ress.set(http::field::server, "AntyCopyRightCppServer");
+    auto cookieName = std::string(config["SESSION_COOKIE_NAME"]);
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+    auto cookie_value = std::format(
+        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+        cookieName,
+        sessionId,
+        sessionMaxAge
+    );
+    ress.set(http::field::set_cookie, cookie_value);
+    ress.prepare_payload();
+    co_return ress;
 }
 asio::awaitable<http::response<http::string_body>> Server::authMeHandler(http::request<http::string_body> req) {
-    http::response<http::string_body> res{http::status::not_implemented, req.version()};
-    res.body() = "Google auth me is not implemented yet";
+    std::string_view cookieName = config["SESSION_COOKIE_NAME"];
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+
+    auto sessionId = getCookie(req, cookieName);
+    if (sessionId == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    auto sessionHash = util::sha256Hex(sessionId.value());
+    auto now = util::time::getCurrentTimestamp();
+
+    auto session = co_await databaseSession->selectActiveAppSession(sessionHash, now);
+
+    if (session == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    auto sessionUpdate = co_await databaseSession->updateAppSessionLastSeen(sessionHash, now);
+
+    if (!sessionUpdate) {
+        std::println(std::cerr, "Failed to update app session last_seen_at");
+    }
+
+    auto user = co_await databaseSession->selectAuthUserById(session->userId);
+    if (user == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    boost::json::object json;
+    boost::json::object userJson;
+    userJson["id"] = user->id;
+    userJson["name"] = user->name;
+    userJson["email"] = user->email;
+    userJson["googleSub"] = user->googleSub;
+    userJson["picture"] = user->pictureUrl;
+
+    json["user"] = userJson;
+
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.body() = boost::json::serialize(json);
+    res.set(http::field::content_type, "application/json");
+    res.set(http::field::cache_control, "no-store");
     res.prepare_payload();
     co_return res;
 }
 asio::awaitable<http::response<http::string_body>> Server::authLogoutHandler(http::request<http::string_body> req) {
-    http::response<http::string_body> res{http::status::not_implemented, req.version()};
-    res.body() = "Google auth logout is not implemented yet";
+
+    std::string_view cookieName = config["SESSION_COOKIE_NAME"];
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+
+    auto sessionId = getCookie(req, cookieName);
+    if (sessionId == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::no_content, req.version()};
+    }
+
+    auto sessionHash = util::sha256Hex(sessionId.value());
+    auto now = util::time::getCurrentTimestamp();
+
+    co_await databaseSession->revokeAppSession(sessionHash, now);
+
+    http::response<http::string_body> res{http::status::no_content, req.version()};
+    auto cookie_value = std::format(
+        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        cookieName
+    );
+
+    res.set(http::field::set_cookie,cookie_value);
     res.prepare_payload();
     co_return res;
 }

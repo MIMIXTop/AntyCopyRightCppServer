@@ -77,5 +77,8 @@ private:
     asio::awaitable<void> download_extract_store(
         DocumentRequest req, asio::any_io_executor cpu_ex, asio::strand<asio::any_io_executor> store_strand,
         std::shared_ptr<std::vector<Document>> container);
+
+    template<typename T>
+    std::optional<std::string> getCookie(const http::request<T>& req, std::string_view cookieName);
 };
 }   // namespace Network

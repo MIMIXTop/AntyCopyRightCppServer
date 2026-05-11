@@ -50,7 +50,6 @@ public:
 
     boost::asio::awaitable<std::optional<AuthUser>> selectAuthUserByGoogleSub(std::string_view googleSub);
     boost::asio::awaitable<std::optional<AuthUser>> insertAuthUser(
-        std::string_view id,
         std::string_view googleSub,
         std::string_view email,
         std::string_view name,
@@ -78,6 +77,7 @@ public:
     boost::asio::awaitable<bool> revokeAppSession(std::string_view sessionHash, std::string_view revokedAt);
     boost::asio::awaitable<bool> updateAppSessionLastSeen(std::string_view sessionHash, std::string_view lastSeenAt);
 
+    boost::asio::awaitable<std::optional<AuthUser>> selectAuthUserById(std::string_view userId);
 
 private:
     boost::asio::thread_pool threadPool{
