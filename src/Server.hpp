@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Auth/GoogleTokenManager.hpp"
 #include "Models/Paragraph.hpp"
 #include "Models/Document.hpp"
 #include "Session/DataBaseSession.hpp"
@@ -38,6 +39,7 @@ private:
         AuthGoogleCallback,
         AuthMe,
         AuthLogout,
+        ClassroomCourses
     };
 
     struct DocumentRequest {
@@ -72,6 +74,7 @@ private:
     asio::awaitable<http::response<http::string_body>> authMeHandler(http::request<http::string_body> req);
 
     asio::awaitable<http::response<http::string_body>> authLogoutHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> classroomCoursesHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> handle_document_request(
         std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex);
     asio::awaitable<void> download_extract_store(

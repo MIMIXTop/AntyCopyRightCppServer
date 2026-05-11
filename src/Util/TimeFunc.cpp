@@ -9,13 +9,10 @@ namespace {
 
 std::optional<std::chrono::sys_seconds> parse_utc_time(std::string_view timestamp) {
     std::chrono::sys_seconds tp;
-
     std::ispanstream stream { std::span { timestamp } };
-
-    if (stream >> std::chrono::parse("%FT%TZ", tp)) {
+    if (stream >> std::chrono::parse("%FT%T%Ez", tp)) {
         return tp;
     }
-
     return std::nullopt;
 }
 

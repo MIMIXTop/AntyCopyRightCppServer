@@ -66,14 +66,13 @@ namespace Network {
 Server::Server(
     asio::io_context& io, const std::string& address, const std::string& port, const std::string& cert_file,
     const std::string& private_key_file)
-  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server) {
+  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server), databaseSession(std::make_shared<DataBaseSession>()) {
     ssl_ctx_.set_options(
         asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
         asio::ssl::context::single_dh_use);
 
     ssl_ctx_.use_certificate_chain_file(cert_file);
     ssl_ctx_.use_private_key_file(private_key_file, asio::ssl::context::pem);
-    databaseSession = std::make_shared<DataBaseSession>();
 }
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
@@ -85,6 +84,7 @@ const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnu
     { "/api/auth/google/callback", AuthGoogleCallback },
     { "/api/auth/me", AuthMe },
     { "/api/auth/logout", AuthLogout },
+    { "/api/classroom/courses", ClassroomCourses}
 };
 
 template <typename T>
@@ -213,6 +213,11 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
         case AuthMe:
             if (req.method() == http::verb::get) {
                 co_return co_await authMeHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
+        case ClassroomCourses:
+            if (req.method() == http::verb::get) {
+                co_return co_await classroomCoursesHandler(std::move(req));
             }
             co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
     }
@@ -499,6 +504,66 @@ asio::awaitable<http::response<http::string_body>> Server::authLogoutHandler(htt
     );
 
     res.set(http::field::set_cookie,cookie_value);
+    res.prepare_payload();
+    co_return res;
+}
+asio::awaitable<http::response<http::string_body>>
+Server::classroomCoursesHandler(http::request<http::string_body> req) {
+    std::string_view cookieName = config["SESSION_COOKIE_NAME"];
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+
+    std::println(std::cerr, "classroom cookie header: {}", req[http::field::cookie]);
+
+    auto sessionId = getCookie(req, cookieName);
+    if (sessionId == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    std::println(std::cerr, "classroom session cookie found: {}", sessionId.has_value());
+
+    auto sessionHash = util::sha256Hex(sessionId.value());
+    auto now = util::time::getCurrentTimestamp();
+
+    auto session = co_await databaseSession->selectActiveAppSession(sessionHash, now);
+
+    std::println(std::cerr, "classroom session found: {}", session.has_value());
+    if (session.has_value()) {
+        std::println(std::cerr, "classroom user_id: {}", session->userId);
+    }
+
+    if (session == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    Auth::GoogleTokenManager tokenManager{
+        ioc_.get_executor(),
+        databaseSession,
+        config
+    };
+    auto access_token = co_await tokenManager.getValidAccessToken(session->userId);
+    std::println(std::cerr, "classroom access token found: {}", access_token.has_value());
+
+    if (access_token == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    std::string target = std::format(
+        "/v1/courses?courseStates=ACTIVE"
+    );
+
+    http::request<http::string_body> request{http::verb::get, target, 11};
+    request.set(http::field::host, "classroom.googleapis.com");
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::authorization, "Bearer " + access_token.value());
+
+    auto googleSession = std::make_shared<SslSession>(ioc_.get_executor());
+    auto result = co_await googleSession->sendRequest<http::string_body>(request);
+
+    http::response<http::string_body> res{result.result(), result.version()};
+    res.set(http::field::content_type, "application/json");
+    res.body() = result.body();
     res.prepare_payload();
     co_return res;
 }
