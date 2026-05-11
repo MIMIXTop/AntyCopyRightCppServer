@@ -1,24 +1,13 @@
 #pragma once
-#include <chrono>
 #include <string>
-#include <format>
+#include <string_view>
 
 namespace util::time {
-inline std::string getCurrentTimestamp() {
-    auto now = std::chrono::system_clock::now();
-    auto now_sec = std::chrono::floor<std::chrono::seconds>(now);
-    return std::format("{:%FT%TZ}", now_sec);
-}
+std::string getCurrentTimestamp();
 
-inline std::string getCurrentTimeAfterMinutes(int minutes) {
-    auto now = std::chrono::system_clock::now() + std::chrono::minutes{minutes};
-    auto now_sec = std::chrono::floor<std::chrono::seconds>(now);
-    return std::format("{:%FT%TZ}", now_sec);
-}
+std::string getCurrentTimeAfterMinutes(int minutes);
 
-inline std::string getCurrentTimeAfterSeconds(int seconds) {
-    auto now = std::chrono::system_clock::now() + std::chrono::seconds{seconds};
-    auto now_sec = std::chrono::floor<std::chrono::seconds>(now);
-    return std::format("{:%FT%TZ}", now_sec);
-}
+std::string getCurrentTimeAfterSeconds(int seconds);
+
+bool isTimestampAfterNowPlus(std::string_view timestamp, int seconds);
 }

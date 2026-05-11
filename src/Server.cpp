@@ -9,6 +9,7 @@
 
 #include <boost/json.hpp>
 #include <boost/url.hpp>
+#include <boost/algorithm/string.hpp>
 #include <boost/url/params_ref.hpp>
 
 #include <boost/asio/experimental/parallel_group.hpp>
@@ -19,6 +20,7 @@
 #include <iostream>
 #include <ranges>
 #include <string>
+#include <map>
 
 namespace {
     std::array<std::string_view, 8> googleOAuthScopes {
@@ -31,6 +33,27 @@ namespace {
         "email",
         "profile"
     } ;
+
+    std::map<std::string, std::string> parse_cookie(std::string_view cookie_header) {
+        std::map<std::string, std::string> cookie;
+
+        for (auto&& chunk : cookie_header | std::views::split(';')) {
+            std::string pair(std::ranges::data(chunk), std::ranges::size(chunk));
+
+            boost::trim(pair);
+
+            if (pair.empty()) continue;
+
+            if (auto pos = pair.find('='); pos != std::string_view::npos) {
+                cookie.emplace(
+                  pair.substr(0, pos),
+                  pair.substr(pos + 1)
+                );
+            }
+        }
+
+        return cookie;
+    }
 
 }
 
@@ -67,7 +90,8 @@ const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnu
 template <typename T>
 std::optional<std::string> Server::getCookie(const http::request<T>& req, std::string_view cookieName) {
 
-    for (auto&& [key, value] : http::param_list(req[http::field::cookie])) {
+    auto cookie = parse_cookie(req[http::field::cookie]);
+    for (auto&& [key, value] : cookie) {
         if (key == cookieName) {
             return  value;
         }
