@@ -33,11 +33,20 @@ FetchContent_Declare(
         GIT_TAG 4.0.10
 )
 
+FetchContent_Declare(
+        cryptopp_cmake
+        GIT_REPOSITORY https://github.com/abdes/cryptopp-cmake.git
+        GIT_TAG CRYPTOPP_8_9_0
+)
+
 set(MZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(MZ_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 set(MZ_PROJECT OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(googletest pugixml minizip-ng)
+set(CRYPTOPP_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(CRYPTOPP_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest pugixml minizip-ng cryptopp_cmake)
 
 file(GLOB_RECURSE SRCS CONFIGURE_DEPENDS src/*.cpp)
 list(REMOVE_ITEM SRCS "${CMAKE_SOURCE_DIR}/src/main.cpp")
@@ -63,6 +72,7 @@ target_link_libraries(${PROJECT_NAME}_lib PUBLIC
         ${PQXX_LIBRARIES}
         ICU::uc
         PkgConfig::POPPLER_CPP
+        cryptopp
 )
 
 add_executable(${PROJECT_NAME} src/main.cpp)

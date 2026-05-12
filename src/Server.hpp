@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Auth/GoogleTokenManager.hpp"
 #include "Models/Paragraph.hpp"
 #include "Models/Document.hpp"
 #include "Session/DataBaseSession.hpp"
@@ -14,6 +15,8 @@
 #include <boost/beast/http/string_body_fwd.hpp>
 #include <string>
 #include <unordered_map>
+#include <boost/url/error_types.hpp>
+#include <boost/url/url_view.hpp>
 
 namespace Network {
 namespace asio = boost::asio;
@@ -33,11 +36,10 @@ public:
 private:
     enum RequesType {
         GetStudentAnalizis,
-        GetRefreshToken,
         AuthGoogleStart,
         AuthGoogleCallback,
         AuthMe,
-        AuthLogout,
+        AuthLogout
     };
 
     struct DocumentRequest {
@@ -60,9 +62,11 @@ private:
 
     asio::awaitable<void> doSession(ssl_stream stream);
     asio::awaitable<void> listen();
+    void applyCorsHeaders(http::response<http::string_body>& res) const;
 
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
+
     asio::awaitable<http::response<http::string_body>> authGoogleStartHandler(http::request<http::string_body> req);
 
     asio::awaitable<http::response<http::string_body>> authGoogleCallbackHandler(http::request<http::string_body> req);
@@ -70,10 +74,17 @@ private:
     asio::awaitable<http::response<http::string_body>> authMeHandler(http::request<http::string_body> req);
 
     asio::awaitable<http::response<http::string_body>> authLogoutHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> classroomProxyHandler(http::request<http::string_body> req, boost::urls::url_view target);
     asio::awaitable<http::response<http::string_body>> handle_document_request(
         std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex);
     asio::awaitable<void> download_extract_store(
         DocumentRequest req, asio::any_io_executor cpu_ex, asio::strand<asio::any_io_executor> store_strand,
         std::shared_ptr<std::vector<Document>> container);
+
+    template<typename T>
+    std::optional<std::string> getCookie(const http::request<T>& req, std::string_view cookieName);
+
+    asio::awaitable<std::tuple<std::optional<AppSession>, std::string>> getSessionFromCookie(http::request<http::string_body>& req);
+
 };
 }   // namespace Network

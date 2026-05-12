@@ -1,12 +1,17 @@
 #include "Server.hpp"
-#include "Server.hpp"
-#include "Server.hpp"
 
+#include "Auth/GoogleOAuthClient.hpp"
 #include "DocumentReader/DocReader.hpp"
 #include "Models/Document.hpp"
 #include "Session/SimpleSession.hpp"
+#include "Util/Encrypt.hpp"
+#include "Util/NetworkHealper.hpp"
+#include "Util/TimeFunc.hpp"
 
 #include <boost/json.hpp>
+#include <boost/url.hpp>
+#include <boost/algorithm/string.hpp>
+#include <boost/url/params_ref.hpp>
 
 #include <boost/asio/experimental/parallel_group.hpp>
 
@@ -14,7 +19,22 @@
 #include <filesystem>
 #include <string_view>
 #include <iostream>
-#include <boost/url/url.hpp>
+#include <ranges>
+#include <string>
+#include <map>
+
+namespace {
+    std::array<std::string_view, 8> googleOAuthScopes {
+        "https://www.googleapis.com/auth/classroom.courses.readonly",
+        "https://www.googleapis.com/auth/classroom.rosters.readonly",
+        "https://www.googleapis.com/auth/classroom.profile.emails",
+        "https://www.googleapis.com/auth/classroom.coursework.students.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "openid",
+        "email",
+        "profile"
+    };
+}
 
 constexpr std::string_view GOOGLE_CLASSROOM_HOST = "classroom.googleapis.com";
 constexpr std::string_view GOOGLE_HOST = "www.googleapis.com";
@@ -25,26 +45,47 @@ namespace Network {
 Server::Server(
     asio::io_context& io, const std::string& address, const std::string& port, const std::string& cert_file,
     const std::string& private_key_file)
-  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server) {
+  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server), databaseSession(std::make_shared<DataBaseSession>()) {
     ssl_ctx_.set_options(
         asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
         asio::ssl::context::single_dh_use);
 
     ssl_ctx_.use_certificate_chain_file(cert_file);
     ssl_ctx_.use_private_key_file(private_key_file, asio::ssl::context::pem);
-    databaseSession = std::make_shared<DataBaseSession>();
 }
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
 const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnum = {
     { "/api/analyze", GetStudentAnalizis },
-    { "/api/getRefreshToken", GetRefreshToken },
-    { "api/auth/google/start", AuthGoogleStart },
-    { "api/auth/google/callback", AuthGoogleCallback },
-    { "api/auth/me", AuthMe },
-    { "api/auth/logout", AuthLogout },
+    { "/api/auth/google/start", AuthGoogleStart },
+    { "/api/auth/google/callback", AuthGoogleCallback },
+    { "/api/auth/me", AuthMe },
+    { "/api/auth/logout", AuthLogout }
 };
+
+template <typename T>
+std::optional<std::string> Server::getCookie(const http::request<T>& req, std::string_view cookieName) {
+
+    auto cookie = util::network::parse_cookie(req[http::field::cookie]);
+    for (auto&& [key, value] : cookie) {
+        if (key == cookieName) {
+            return  value;
+        }
+    }
+
+    return std::nullopt;
+}
+
+void Server::applyCorsHeaders(http::response<http::string_body>& res) const {
+    const auto appOrigin = config["APP_ORIGIN"];
+    if (!appOrigin.empty()) {
+        res.set(http::field::access_control_allow_origin, appOrigin);
+    }
+    res.set("Access-Control-Allow-Credentials", "true");
+    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+    res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
+}
 
 asio::awaitable<void> Server::doSession(ssl_stream stream) {
     beast::flat_buffer buffer;
@@ -64,7 +105,7 @@ asio::awaitable<void> Server::doSession(ssl_stream stream) {
             http::response<http::string_body> res = co_await requestHandler(std::move(req));
 
             beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(10));
-            res.set(http::field::access_control_allow_origin, "*");
+            applyCorsHeaders(res);
             co_await http::async_write(stream, res, asio::use_awaitable);
 
             if (res.need_eof()) {
@@ -107,8 +148,6 @@ asio::awaitable<void> Server::listen() {
 asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::request<http::string_body> req) {
     if (req.method() == http::verb::options) {
         http::response<http::string_body> res { http::status::no_content, req.version() };
-        res.set(http::field::access_control_allow_methods, "POST, GET, OPTIONS");
-        res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
         co_return res;
     }
 
@@ -119,6 +158,10 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
     }
 
     std::string target = std::string(parsedTarget.value().path());
+
+    if (target == "/api/classroom/courses" || target.starts_with("/api/classroom/courses/")) {
+        co_return co_await classroomProxyHandler(req, parsedTarget.value());
+    }
 
     auto it = changeReqToEnum.find(target);
     if (it == changeReqToEnum.end()) {
@@ -131,13 +174,47 @@ asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::
                 co_return co_await analyzesHandler(req);
             }
             co_return http::response<http::string_body> { http::status::bad_request, req.version() };
-        case GetRefreshToken:
-            co_return http::response<http::string_body> { http::status::service_unavailable, req.version() };
+        case AuthGoogleStart:
+            if (req.method() == http::verb::get) {
+                co_return co_await authGoogleStartHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
+        case AuthGoogleCallback:
+            if (req.method() == http::verb::get) {
+                co_return co_await authGoogleCallbackHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
+        case AuthLogout:
+            if (req.method() == http::verb::post) {
+                co_return co_await authLogoutHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
+        case AuthMe:
+            if (req.method() == http::verb::get) {
+                co_return co_await authMeHandler(req);
+            }
+            co_return http::response<http::string_body> { http::status::method_not_allowed, req.version() };
     }
 }
 
 asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http::request<http::string_body> req) {
     std::vector<Document> doc_vec;
+
+    auto [session, _] = co_await getSessionFromCookie(req);
+    if (session == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    Auth::GoogleTokenManager tokenManager{
+        ioc_.get_executor(),
+        databaseSession,
+        config
+    };
+
+    auto accessToken = co_await tokenManager.getValidAccessToken(session->userId);
+    if (accessToken == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
 
     auto json_data = boost::json::parse(req.body());
 
@@ -156,7 +233,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
         auto file_url = std::string(file_obj.at("file_url").as_string());
         auto file_type = std::string(file_obj.at("file_type").as_string());
         http::request<http::string_body> g_req { http::verb::get, "/drive/v3/files/" + file_id + "?alt=media", 11 };
-        g_req.set(http::field::authorization, req[http::field::authorization]);
+        g_req.set(http::field::authorization, "Bearer " + accessToken.value());
         g_req.set(http::field::host, GOOGLE_HOST);
         g_req.keep_alive(req.keep_alive());
 
@@ -165,6 +242,302 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
 
     auto res = co_await handle_document_request(req_vec, doc_vec, tp.get_executor());
     co_return res;
+}
+asio::awaitable<http::response<http::string_body>>
+Server::authGoogleStartHandler(http::request<http::string_body> req) {
+    using namespace std::literals;
+
+    if (config["GOOGLE_CLIENT_ID"].empty() || config["GOOGLE_REDIRECT_URI"].empty()) {
+        http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+        res.body() = "Google OAuth config is missing";
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto randomToken = util::randomUrlSafeToken();
+    auto randomTokenHash = util::sha256Hex(randomToken);
+    auto expiresAt = util::time::getCurrentTimeAfterMinutes(5);
+
+    if (auto stateResult = co_await databaseSession->insertOAuthState(randomTokenHash, expiresAt); !stateResult) {
+        http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+        res.body() = "Failed to create OAuth state";
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto scope = googleOAuthScopes | std::views::join_with(" "sv) | std::ranges::to<std::string>();
+
+    std::string_view baseUrl = "https://accounts.google.com/o/oauth2/v2/auth";
+    boost::urls::url redirectUrl{baseUrl};
+
+    redirectUrl.params().append({
+        {"client_id", config["GOOGLE_CLIENT_ID"]},
+        {"redirect_uri", config["GOOGLE_REDIRECT_URI"]},
+        {"response_type", "code"},
+        {"scope", scope},
+        {"access_type", "offline"},
+        {"include_granted_scopes", "true"},
+        {"state", randomToken}
+    });
+
+    http::response<http::string_body> res{http::status::found, req.version()};
+    res.set(http::field::location, redirectUrl.buffer());
+    res.prepare_payload();
+
+    co_return res;
+}
+asio::awaitable<http::response<http::string_body>>
+Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
+
+    auto url = boost::urls::parse_origin_form(req.target());
+
+    if (!url) {
+        co_return http::response<http::string_body>{http::status::bad_request, req.version()};
+    }
+
+    if (auto error = url->params().find("error"); error != url->params().end()) {
+        http::response<http::string_body> res{http::status::unauthorized, req.version()};
+        res.body() = std::string((*error).value);
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto code = url->params().find("code");
+    auto state = url->params().find("state");
+
+    if (code == url->params().end() || state == url->params().end()) {
+        http::response<http::string_body> res{http::status::bad_request, req.version()};
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto stateValue = (*state).value;
+
+    auto stateHash = util::sha256Hex(stateValue);
+    auto now = util::time::getCurrentTimestamp();
+
+    if (auto ok = co_await databaseSession->consumeOAuthState(stateHash, now); ok == false) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    GoogleUserInfo client;
+    GoogleTokenResponse token;
+    try {
+        GoogleOAuthClient googleOAuthClient{ioc_.get_executor()};
+        token = co_await googleOAuthClient.exchangeCodeForTokens((*code).value);
+        client = co_await googleOAuthClient.fetchUserInfo(token.accessToken);
+    } catch (const std::exception& e) {
+        std::println(std::cerr, "Google OAuth callback error: {}", e.what());
+        http::response<http::string_body> res{http::status::bad_gateway, req.version()};
+        res.body() = "Google OAuth request failed";
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto user = co_await databaseSession->selectAuthUserByGoogleSub(client.sub);
+    std::optional<AuthUser> authUser;
+    auto loginAt = util::time::getCurrentTimestamp();
+    if (!user.has_value()) {
+        authUser = co_await databaseSession->insertAuthUser(client.sub, client.email, client.name, client.pictureUrl, loginAt);
+    } else {
+        authUser = co_await databaseSession->updateAuthUserLogin(user->id, client.email, client.name, client.pictureUrl, loginAt);
+    }
+
+    if (!authUser.has_value()) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+
+    auto tokenEncryptionKey = std::string(config["TOKEN_ENCRYPTION_KEY"]);
+    if (tokenEncryptionKey.empty()) {
+        tokenEncryptionKey = std::string(config["SECRET_KEY"]);
+    }
+    if (tokenEncryptionKey.empty()) {
+        http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+        res.body() = "Token encryption key is missing";
+        res.prepare_payload();
+        co_return res;
+    }
+
+    auto access_token_enc = util::textEncrypt(token.accessToken, tokenEncryptionKey);
+    std::optional<std::string> refresh_token_enc;
+    if (token.refreshToken.has_value()) {
+        refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
+    } else {
+        auto existingTokens = co_await databaseSession->selectGoogleOAuthTokens(authUser->id);
+        refresh_token_enc = existingTokens.and_then([](const GoogleOAuthTokens& tokens) {
+            return tokens.refreshTokenEnc;
+        });
+    }
+
+    auto expiresAt = util::time::getCurrentTimeAfterSeconds(token.expiresIn);
+    auto res = co_await databaseSession->upsertGoogleOAuthTokens({
+        .userId = authUser->id,
+        .accessTokenEnc = access_token_enc,
+        .refreshTokenEnc = refresh_token_enc,
+        .expiresAt = expiresAt,
+        .scope = token.scope,
+        .tokenType = token.tokenType
+    });
+
+    if (!res) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+
+    auto sessionId = util::randomUrlSafeToken();
+    auto sessionHash = util::sha256Hex(sessionId);
+    auto sessionTtlDaysText = std::string(config["SESSION_TTL_DAYS"]);
+    if (sessionTtlDaysText.empty()) {
+        sessionTtlDaysText = "7";
+    }
+    auto sessionTtlDays = std::stoi(sessionTtlDaysText);
+    auto sessionMaxAge = sessionTtlDays * 24 * 60 * 60;
+    auto sessionExpiresAt = util::time::getCurrentTimeAfterMinutes(sessionTtlDays * 24 * 60);
+    std::string userAgent;
+
+    if (auto it = req.find(http::field::user_agent); it != req.end()) {
+        userAgent = std::string(it->value());
+    }
+    auto resAppSession = co_await databaseSession->insertAppSession(
+        "",
+        authUser->id,
+        sessionHash,
+        sessionExpiresAt,
+        userAgent
+    );
+
+    if (!resAppSession) {
+        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    }
+    http::response<http::string_body> ress{http::status::found, req.version()};
+    ress.set(http::field::location, config["APP_ORIGIN"]);
+    ress.set(http::field::server, "AntyCopyRightCppServer");
+    auto cookieName = std::string(config["SESSION_COOKIE_NAME"]);
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+    auto cookie_value = std::format(
+        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+        cookieName,
+        sessionId,
+        sessionMaxAge
+    );
+    ress.set(http::field::set_cookie, cookie_value);
+    ress.prepare_payload();
+    co_return ress;
+}
+asio::awaitable<http::response<http::string_body>> Server::authMeHandler(http::request<http::string_body> req) {
+
+    auto [session, sessionHash] = co_await getSessionFromCookie(req);
+
+    if (session == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    auto now = util::time::getCurrentTimestamp();
+
+    auto sessionUpdate = co_await databaseSession->updateAppSessionLastSeen(sessionHash, now);
+
+    if (!sessionUpdate) {
+        std::println(std::cerr, "Failed to update app session last_seen_at");
+    }
+
+    auto user = co_await databaseSession->selectAuthUserById(session->userId);
+    if (user == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    boost::json::object json;
+    boost::json::object userJson;
+    userJson["id"] = user->id;
+    userJson["name"] = user->name;
+    userJson["email"] = user->email;
+    userJson["googleSub"] = user->googleSub;
+    userJson["picture"] = user->pictureUrl;
+
+    json["user"] = userJson;
+
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    res.body() = boost::json::serialize(json);
+    res.set(http::field::content_type, "application/json");
+    res.set(http::field::cache_control, "no-store");
+    res.prepare_payload();
+    co_return res;
+}
+asio::awaitable<http::response<http::string_body>> Server::authLogoutHandler(http::request<http::string_body> req) {
+
+    std::string_view cookieName = config["SESSION_COOKIE_NAME"];
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+
+    auto sessionId = getCookie(req, cookieName);
+    if (sessionId == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::no_content, req.version()};
+    }
+
+    auto sessionHash = util::sha256Hex(sessionId.value());
+    auto now = util::time::getCurrentTimestamp();
+
+    co_await databaseSession->revokeAppSession(sessionHash, now);
+
+    http::response<http::string_body> res{http::status::no_content, req.version()};
+    auto cookie_value = std::format(
+        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        cookieName
+    );
+
+    res.set(http::field::set_cookie,cookie_value);
+    res.prepare_payload();
+    co_return res;
+}
+asio::awaitable<http::response<http::string_body>> Server::classroomProxyHandler(http::request<http::string_body> req, boost::url_view target) {
+    if (req.method() != http::verb::get) {
+        co_return http::response<http::string_body> {http::status::method_not_allowed, req.version()};
+    }
+
+    if (!util::network::verifPath(target)) {
+        co_return http::response<http::string_body> {http::status::bad_request, req.version()};
+    }
+
+    constexpr std::string_view prefix = "/api/classroom";
+    auto path = target.encoded_path();
+
+    std::string newTarget = "/v1";
+    newTarget += path.substr(prefix.size());
+
+    if (!target.encoded_query().empty()) {
+        newTarget += "?";
+        newTarget += target.encoded_query();
+    } else if (path == "/api/classroom/courses") {
+        newTarget += "?courseStates=ACTIVE";
+    }
+
+    http::request<http::string_body> request{http::verb::get, newTarget, 11};
+    Auth::GoogleTokenManager tokenManager{
+        ioc_.get_executor(),
+        databaseSession,
+        config
+    };
+
+    auto [session , _] = co_await getSessionFromCookie(req);
+    if (session == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    auto token = co_await tokenManager.getValidAccessToken(session->userId);
+    if (token == std::nullopt) {
+        co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
+    }
+
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::authorization, "Bearer " + token.value());
+    request.set(http::field::host, GOOGLE_CLASSROOM_HOST);
+    request.prepare_payload();
+
+    auto googleSession = std::make_shared<SslSession>(ioc_.get_executor());
+    auto googleResponse = co_await googleSession->sendRequest<http::string_body>(std::move(request));
+
+    co_return googleResponse;
 }
 
 asio::awaitable<http::response<http::string_body>> Server::handle_document_request(
@@ -233,7 +606,6 @@ asio::awaitable<http::response<http::string_body>> Server::handle_document_reque
 
     http::response<http::string_body> res { http::status::ok, 11 };
     res.body() = res_message.body();
-    res.set(http::field::access_control_allow_origin, "*");
     co_return res;
 }
 
@@ -246,7 +618,7 @@ asio::awaitable<void> Server::download_extract_store(
     std::println(std::cout, "Попытка скачать файл {}.", req.id);
 
     if (doc_req.result() != http::status::ok) {
-        std::string temp = std::string(doc_req.body().begin(), doc_req.body().end());
+        auto temp = std::string(doc_req.body().begin(), doc_req.body().end());
 
         std::println(
             std::cerr, "ОШИБКА СКАЧИВАНИЯ {}: Код {}. Тело: {}", req.id, static_cast<unsigned>(doc_req.result()),
@@ -260,5 +632,25 @@ asio::awaitable<void> Server::download_extract_store(
     co_await asio::post(store_strand, asio::use_awaitable);
 
     container->emplace_back(std::move(doc_text.value()), req.id);
+}
+
+asio::awaitable<std::tuple<std::optional<AppSession>, std::string>> Server::getSessionFromCookie(http::request<http::string_body>& req) {
+
+    std::string_view cookieName = config["SESSION_COOKIE_NAME"];
+    if (cookieName.empty()) {
+        cookieName = "anty_session";
+    }
+
+    auto sessionId = getCookie(req, cookieName);
+    if (sessionId == std::nullopt) {
+        co_return std::make_tuple(std::nullopt, "");
+    }
+
+    const auto sessionHash = util::sha256Hex(sessionId.value());
+    std::string now;
+    now = util::time::getCurrentTimestamp();
+
+    auto session = co_await databaseSession->selectActiveAppSession(sessionHash, now);
+    co_return std::make_tuple(session, std::move(sessionHash));
 }
 }   // namespace Network
