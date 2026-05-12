@@ -180,7 +180,6 @@ SimpleSession::downloadWithRedirect(http::request<http::string_body> req, int ma
     throw std::runtime_error("Too many redirects");
 }
 
-// Явные инстанциации шаблонов
 template asio::awaitable<http::response<http::string_body>> SimpleSession::sendRequest<http::string_body>(
     http::request<http::string_body>);
 

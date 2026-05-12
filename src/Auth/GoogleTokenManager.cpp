@@ -3,6 +3,9 @@
 #include "Util/Encrypt.hpp"
 #include "Util/TimeFunc.hpp"
 
+#include <iostream>
+#include <print>
+
 namespace {
 
 namespace asio = boost::asio;
@@ -28,16 +31,36 @@ asio::awaitable<std::optional<std::string>> GoogleTokenManager::getValidAccessTo
     if (encrypt_key.empty()) {
         encrypt_key = std::string(config["SECRET_KEY"]);
     }
-    std::string decrypt_access_token = util::textDecrypt(access_token, encrypt_key);
+    std::string decrypt_access_token;
+    try {
+        decrypt_access_token = util::textDecrypt(access_token, encrypt_key);
+    } catch (const std::exception& e) {
+        std::println(std::cerr, "Failed to decrypt Google access token: {}", e.what());
+        co_return std::nullopt;
+    }
+
     if (!util::time::isTimestampAfterNowPlus(auth->expiresAt, 300)) {
         if (auth->refreshTokenEnc == std::nullopt) {
             co_return std::nullopt;
         }
 
         GoogleOAuthClient client{executor};
-        std::string decrypt_refresh_token = util::textDecrypt(auth->refreshTokenEnc.value(), encrypt_key);
+        std::string decrypt_refresh_token;
+        try {
+            decrypt_refresh_token = util::textDecrypt(auth->refreshTokenEnc.value(), encrypt_key);
+        } catch (const std::exception& e) {
+            std::println(std::cerr, "Failed to decrypt Google refresh token: {}", e.what());
+            co_return std::nullopt;
+        }
 
-        auto tokenRes = co_await client.refreshAccessToken(decrypt_refresh_token);
+        GoogleTokenResponse tokenRes;
+        try {
+            tokenRes = co_await client.refreshAccessToken(decrypt_refresh_token);
+        } catch (const std::exception& e) {
+            std::println(std::cerr, "Failed to refresh Google access token: {}", e.what());
+            co_return std::nullopt;
+        }
+
         auto new_encrypt_access_token = util::textEncrypt(tokenRes.accessToken, encrypt_key);
         std::optional<std::string> new_encrypt_refresh_token;
         if (tokenRes.refreshToken == std::nullopt) {
