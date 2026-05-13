@@ -408,7 +408,7 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
         cookieName = "anty_session";
     }
     auto cookie_value = std::format(
-        "{}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={}",
+        "{}={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age={}",
         cookieName,
         sessionId,
         sessionMaxAge
