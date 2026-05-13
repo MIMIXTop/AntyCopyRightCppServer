@@ -10,9 +10,7 @@
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <boost/beast.hpp>
-#include <boost/asio/ssl.hpp>
-#include <boost/beast/http/message_fwd.hpp>
-#include <boost/beast/http/string_body_fwd.hpp>
+#include <boost/beast/http.hpp>
 #include <string>
 #include <unordered_map>
 #include <boost/url/error_types.hpp>
@@ -23,13 +21,11 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
-using ssl_stream = asio::ssl::stream<beast::tcp_stream>;
 using tcp_stream = beast::tcp_stream;
 
 class Server {
 public:
-    Server(asio::io_context& io, const std::string& address, const std::string& port, const std::string& cert_file,
-           const std::string& private_key_file);
+    Server(asio::io_context& io, const std::string& address, const std::string& port);
 
     void start();
 
@@ -53,14 +49,13 @@ private:
     asio::io_context& ioc_;
     std::string address_;
     std::string port_;
-    asio::ssl::context ssl_ctx_;
 
     asio::thread_pool tp { std::thread::hardware_concurrency() / 2 };
     std::shared_ptr<DataBaseSession> databaseSession;
 
     Util::ConfigParser config;
 
-    asio::awaitable<void> doSession(ssl_stream stream);
+    asio::awaitable<void> doSession(tcp_stream stream);
     asio::awaitable<void> listen();
     void applyCorsHeaders(http::response<http::string_body>& res) const;
 

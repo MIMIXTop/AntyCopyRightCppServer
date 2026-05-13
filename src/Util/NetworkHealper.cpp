@@ -1,5 +1,7 @@
 #include "NetworkHealper.hpp"
 #include <boost/algorithm/string.hpp>
+#include <ranges>
+#include <vector>
 
 namespace util::network {
 std::map<std::string, std::string> parse_cookie(std::string_view cookie_header) {

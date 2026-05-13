@@ -7,7 +7,6 @@
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
-#include <boost/beast/http/string_body_fwd.hpp>
 #include <openssl/err.h>
 #include <boost/stacktrace.hpp>
 #include <iostream>

@@ -15,10 +15,13 @@
 
 #include <boost/asio/experimental/parallel_group.hpp>
 
+#include <algorithm>
 #include <execution>
 #include <filesystem>
+#include <iterator>
 #include <string_view>
 #include <iostream>
+#include <print>
 #include <ranges>
 #include <string>
 #include <map>
@@ -43,16 +46,10 @@ namespace X = boost::asio::experimental;
 
 namespace Network {
 Server::Server(
-    asio::io_context& io, const std::string& address, const std::string& port, const std::string& cert_file,
-    const std::string& private_key_file)
-  : ioc_(io), address_(address), port_(port), ssl_ctx_(asio::ssl::context::tlsv12_server), databaseSession(std::make_shared<DataBaseSession>()) {
-    ssl_ctx_.set_options(
-        asio::ssl::context::default_workarounds | asio::ssl::context::no_sslv2 | asio::ssl::context::no_sslv3 |
-        asio::ssl::context::single_dh_use);
-
-    ssl_ctx_.use_certificate_chain_file(cert_file);
-    ssl_ctx_.use_private_key_file(private_key_file, asio::ssl::context::pem);
-}
+    asio::io_context& io,
+    const std::string& address,
+    const std::string& port)
+  : ioc_(io), address_(address), port_(port), databaseSession(std::make_shared<DataBaseSession>()) {}
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
@@ -87,12 +84,11 @@ void Server::applyCorsHeaders(http::response<http::string_body>& res) const {
     res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
 }
 
-asio::awaitable<void> Server::doSession(ssl_stream stream) {
+asio::awaitable<void> Server::doSession(tcp_stream stream) {
     beast::flat_buffer buffer;
 
     try {
         beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(10));
-        co_await stream.async_handshake(asio::ssl::stream_base::server, asio::use_awaitable);
 
         while (true) {
             http::request<http::string_body> req;
@@ -112,9 +108,6 @@ asio::awaitable<void> Server::doSession(ssl_stream stream) {
                 break;
             }
         }
-
-        beast::get_lowest_layer(stream).expires_after(std::chrono::seconds(5));
-        co_await stream.async_handshake(asio::ssl::stream_base::server);
 
     } catch (const boost::system::system_error& e) {
         if (e.code() != http::error::end_of_stream && e.code() != asio::error::eof) {
@@ -137,7 +130,7 @@ asio::awaitable<void> Server::listen() {
 
         while (true) {
             auto socket = co_await acceptor.async_accept(asio::use_awaitable);
-            ssl_stream stream(tcp_stream(std::move(socket)), ssl_ctx_);
+            tcp_stream stream(std::move(socket));
             asio::co_spawn(ioc_, doSession(std::move(stream)), asio::detached);
         }
     } catch (const std::exception& e) {
@@ -270,15 +263,14 @@ Server::authGoogleStartHandler(http::request<http::string_body> req) {
     std::string_view baseUrl = "https://accounts.google.com/o/oauth2/v2/auth";
     boost::urls::url redirectUrl{baseUrl};
 
-    redirectUrl.params().append({
-        {"client_id", config["GOOGLE_CLIENT_ID"]},
-        {"redirect_uri", config["GOOGLE_REDIRECT_URI"]},
-        {"response_type", "code"},
-        {"scope", scope},
-        {"access_type", "offline"},
-        {"include_granted_scopes", "true"},
-        {"state", randomToken}
-    });
+    auto params = redirectUrl.params();
+    params.append({"client_id", config["GOOGLE_CLIENT_ID"]});
+    params.append({"redirect_uri", config["GOOGLE_REDIRECT_URI"]});
+    params.append({"response_type", "code"});
+    params.append({"scope", scope});
+    params.append({"access_type", "offline"});
+    params.append({"include_granted_scopes", "true"});
+    params.append({"state", randomToken});
 
     http::response<http::string_body> res{http::status::found, req.version()};
     res.set(http::field::location, redirectUrl.buffer());
@@ -482,7 +474,7 @@ asio::awaitable<http::response<http::string_body>> Server::authLogoutHandler(htt
 
     http::response<http::string_body> res{http::status::no_content, req.version()};
     auto cookie_value = std::format(
-        "{}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0",
+        "{}=; HttpOnly; SameSite=None; Secure Path=/; Max-Age=0",
         cookieName
     );
 
@@ -588,7 +580,7 @@ asio::awaitable<http::response<http::string_body>> Server::handle_document_reque
     boost::json::array obj_array;
 
     if (!cache_docs.empty()) {
-        container->insert_range(container->end(), cache_docs);
+        std::ranges::copy(cache_docs, std::back_inserter(*container));
     }
 
     for (auto&& item : *container) {

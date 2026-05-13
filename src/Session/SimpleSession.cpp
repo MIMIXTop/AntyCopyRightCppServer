@@ -2,7 +2,6 @@
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
-#include <boost/beast/http/string_body_fwd.hpp>
 #include <boost/stacktrace.hpp>
 #include <iostream>
 #include <print>
