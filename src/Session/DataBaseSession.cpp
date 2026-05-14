@@ -27,6 +27,14 @@ namespace {
         return status == http::status::ok || status == http::status::created || status == http::status::no_content;
     }
 
+    template <typename Body>
+    asio::awaitable<http::response<Body>> sendDatabaseRequest(
+        asio::any_io_executor executor,
+        http::request<http::string_body> req) {
+        auto session = std::make_shared<Network::SslSession>(executor);
+        co_return co_await session->sendRequest<Body>(std::move(req));
+    }
+
     std::optional<std::string> optionalString(const boost::json::object& json, std::string_view key) {
         auto value = json.if_contains(key);
         if (value == nullptr || value->is_null()) {
@@ -69,7 +77,7 @@ namespace {
 
 namespace Network {
 
-DataBaseSession::DataBaseSession() : databaseSession(std::make_shared<SslSession>(threadPool.get_executor())) {}
+DataBaseSession::DataBaseSession() = default;
 
 asio::awaitable<bool> DataBaseSession::insertDocument(const Document& document) {
     boost::json::object documentJson {
@@ -85,7 +93,7 @@ asio::awaitable<bool> DataBaseSession::insertDocument(const Document& document) 
     setSupabaseHeaders(req, config);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (auto status = res.result(); status != http::status::created && status != http::status::ok) {
         co_return false;
     }
@@ -119,7 +127,7 @@ asio::awaitable<bool> DataBaseSession::insertDocument(const Document& document) 
     setSupabaseHeaders(sectionsReq, config);
     sectionsReq.prepare_payload();
 
-    auto sectionsRes = co_await databaseSession->sendRequest<http::string_body>(std::move(sectionsReq));
+    auto sectionsRes = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(sectionsReq));
     if (auto status = sectionsRes.result(); status != http::status::created && status != http::status::ok) {
         co_return false;
     }
@@ -138,7 +146,7 @@ asio::awaitable<std::optional<Document>> DataBaseSession::selectDocumentById(std
     setSupabaseHeaders(requestToGetListDocumentSections, config);
     requestToGetListDocumentSections.prepare_payload();
 
-    auto resToDocumentSections = co_await databaseSession->sendRequest<http::string_body>(std::move(requestToGetListDocumentSections));
+    auto resToDocumentSections = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(requestToGetListDocumentSections));
 
     if (const auto status = resToDocumentSections.result(); status != http::status::ok) {
         co_return std::nullopt;
@@ -165,7 +173,7 @@ asio::awaitable<bool> DataBaseSession::deleteDocument(std::string_view documentI
     setSupabaseHeaders(req, config);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (auto status = res.result(); status != http::status::ok && status != http::status::no_content) {
         co_return false;
     }
@@ -185,7 +193,7 @@ asio::awaitable<bool> DataBaseSession::insertOAuthState(std::string_view stateHa
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (auto status = res.result(); status != http::status::created && status != http::status::ok) {
         co_return false;
     }
@@ -209,7 +217,7 @@ DataBaseSession::consumeOAuthState(std::string_view stateHash, std::string_view 
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (auto status = res.result(); status != http::status::created && status != http::status::ok) {
         co_return false;
     }
@@ -233,7 +241,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::selectAuthUserByGoogle
     req.set("Prefer", "return=representation");
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (res.result() != http::status::ok) {
         co_return std::nullopt;
     }
@@ -268,7 +276,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::insertAuthUser(
     req.set("Prefer", "return=representation");
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
 
     if (auto status = res.result(); status != http::status::created && status != http::status::ok) {
         std::println(
@@ -309,7 +317,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::updateAuthUserLogin(
     req.set("Prefer", "return=representation");
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (res.result() != http::status::ok) {
         co_return std::nullopt;
     }
@@ -344,7 +352,7 @@ asio::awaitable<bool> DataBaseSession::upsertGoogleOAuthTokens(const GoogleOAuth
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (!isWriteSuccess(res.result())) {
         std::println(
             std::cerr,
@@ -366,7 +374,7 @@ asio::awaitable<std::optional<GoogleOAuthTokens>> DataBaseSession::selectGoogleO
     setSupabaseHeaders(req, config);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (res.result() != http::status::ok) {
         co_return std::nullopt;
     }
@@ -400,7 +408,7 @@ asio::awaitable<bool> DataBaseSession::insertAppSession(
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (!isWriteSuccess(res.result())) {
         std::println(
             std::cerr,
@@ -425,7 +433,7 @@ asio::awaitable<std::optional<AppSession>> DataBaseSession::selectActiveAppSessi
     setSupabaseHeaders(req, config);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (res.result() != http::status::ok) {
         co_return std::nullopt;
     }
@@ -450,7 +458,7 @@ asio::awaitable<bool> DataBaseSession::revokeAppSession(std::string_view session
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     co_return isWriteSuccess(res.result());
 }
 
@@ -468,7 +476,7 @@ asio::awaitable<bool> DataBaseSession::updateAppSessionLastSeen(
     req.body() = boost::json::serialize(json);
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     co_return isWriteSuccess(res.result());
 }
 
@@ -482,7 +490,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::selectAuthUserById(std
     req.set("Prefer", "return=representation");
     req.prepare_payload();
 
-    auto res = co_await databaseSession->sendRequest<http::string_body>(std::move(req));
+    auto res = co_await sendDatabaseRequest<http::string_body>(threadPool.get_executor(), std::move(req));
     if (res.result() != http::status::ok) {
         co_return std::nullopt;
     }

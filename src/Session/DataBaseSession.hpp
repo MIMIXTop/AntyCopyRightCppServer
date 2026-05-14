@@ -83,7 +83,6 @@ private:
     boost::asio::thread_pool threadPool{
         std::max(1u, std::thread::hardware_concurrency() / 2)
     };
-    std::shared_ptr<SslSession> databaseSession;
     Util::ConfigParser config;
 
     std::string baseUrl = "/rest/v1";
