@@ -43,8 +43,8 @@ namespace {
         return std::string(value->as_string());
     }
 
-    Network::AuthUser authUserFromJson(const boost::json::object& json) {
-        return Network::AuthUser {
+    Network::Type::AuthUser authUserFromJson(const boost::json::object& json) {
+        return Network::Type::AuthUser {
             .id = std::string(json.at("id").as_string()),
             .googleSub = std::string(json.at("google_sub").as_string()),
             .email = std::string(json.at("email").as_string()),
@@ -53,8 +53,8 @@ namespace {
         };
     }
 
-    Network::GoogleOAuthTokens googleOAuthTokensFromJson(const boost::json::object& json) {
-        return Network::GoogleOAuthTokens {
+    Network::Type::GoogleOAuthTokens googleOAuthTokensFromJson(const boost::json::object& json) {
+        return Network::Type::GoogleOAuthTokens {
             .userId = std::string(json.at("user_id").as_string()),
             .accessTokenEnc = std::string(json.at("access_token_enc").as_string()),
             .refreshTokenEnc = optionalString(json, "refresh_token_enc"),
@@ -64,8 +64,8 @@ namespace {
         };
     }
 
-    Network::AppSession appSessionFromJson(const boost::json::object& json) {
-        return Network::AppSession {
+    Network::Type::AppSession appSessionFromJson(const boost::json::object& json) {
+        return Network::Type::AppSession {
             .id = std::string(json.at("id").as_string()),
             .userId = std::string(json.at("user_id").as_string()),
             .sessionHash = std::string(json.at("session_hash").as_string()),
@@ -230,7 +230,7 @@ DataBaseSession::consumeOAuthState(std::string_view stateHash, std::string_view 
     co_return true;
 
 }
-asio::awaitable<std::optional<AuthUser>> DataBaseSession::selectAuthUserByGoogleSub(std::string_view googleSub) {
+asio::awaitable<std::optional<Type::AuthUser>> DataBaseSession::selectAuthUserByGoogleSub(std::string_view googleSub) {
     std::string target = std::format(
         "/rest/v1/auth_users?google_sub=eq.{}&select=id,google_sub,email,name,picture_url",
         googleSub
@@ -254,7 +254,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::selectAuthUserByGoogle
     co_return authUserFromJson(users.front().as_object());
 }
 
-asio::awaitable<std::optional<AuthUser>> DataBaseSession::insertAuthUser(
+asio::awaitable<std::optional<Type::AuthUser>> DataBaseSession::insertAuthUser(
     std::string_view googleSub, std::string_view email, std::string_view name, std::string_view pictureUrl,
     std::string_view lastLoginAt) {
 
@@ -295,7 +295,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::insertAuthUser(
     co_return authUserFromJson(users.front().as_object());
 }
 
-asio::awaitable<std::optional<AuthUser>> DataBaseSession::updateAuthUserLogin(
+asio::awaitable<std::optional<Type::AuthUser>> DataBaseSession::updateAuthUserLogin(
     std::string_view id, std::string_view email, std::string_view name, std::string_view pictureUrl,
     std::string_view lastLoginAt) {
     std::string target = std::format(
@@ -330,7 +330,7 @@ asio::awaitable<std::optional<AuthUser>> DataBaseSession::updateAuthUserLogin(
     co_return authUserFromJson(users.front().as_object());
 }
 
-asio::awaitable<bool> DataBaseSession::upsertGoogleOAuthTokens(const GoogleOAuthTokens& tokens) {
+asio::awaitable<bool> DataBaseSession::upsertGoogleOAuthTokens(const Type::GoogleOAuthTokens& tokens) {
     http::request<http::string_body> req{
         http::verb::post,
         "/rest/v1/google_oauth_tokens?on_conflict=user_id",
@@ -364,7 +364,7 @@ asio::awaitable<bool> DataBaseSession::upsertGoogleOAuthTokens(const GoogleOAuth
     co_return true;
 }
 
-asio::awaitable<std::optional<GoogleOAuthTokens>> DataBaseSession::selectGoogleOAuthTokens(std::string_view userId) {
+asio::awaitable<std::optional<Type::GoogleOAuthTokens>> DataBaseSession::selectGoogleOAuthTokens(std::string_view userId) {
     std::string target = std::format(
         "/rest/v1/google_oauth_tokens?user_id=eq.{}&select=user_id,access_token_enc,refresh_token_enc,expires_at,scope,token_type",
         userId
@@ -420,7 +420,7 @@ asio::awaitable<bool> DataBaseSession::insertAppSession(
     co_return true;
 }
 
-asio::awaitable<std::optional<AppSession>> DataBaseSession::selectActiveAppSession(
+asio::awaitable<std::optional<Type::AppSession>> DataBaseSession::selectActiveAppSession(
     std::string_view sessionHash,
     std::string_view now) {
     std::string target = std::format(
@@ -480,7 +480,7 @@ asio::awaitable<bool> DataBaseSession::updateAppSessionLastSeen(
     co_return isWriteSuccess(res.result());
 }
 
-asio::awaitable<std::optional<AuthUser>> DataBaseSession::selectAuthUserById(std::string_view userId) {
+asio::awaitable<std::optional<Type::AuthUser>> DataBaseSession::selectAuthUserById(std::string_view userId) {
     auto target = std::format(
     "/rest/v1/auth_users?id=eq.{}&select=*", userId
     );

@@ -29,7 +29,7 @@ GoogleOAuthClient::GoogleOAuthClient(asio::any_io_executor executor)
 
 }
 
-asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::exchangeCodeForTokens(std::string_view code) {
+asio::awaitable<Type::GoogleTokenResponse> GoogleOAuthClient::exchangeCodeForTokens(std::string_view code) {
     if (config["GOOGLE_CLIENT_ID"].empty() || config["GOOGLE_CLIENT_SECRET"].empty() ||
         config["GOOGLE_REDIRECT_URI"].empty()) {
         throw std::logic_error("Google OAuth config is missing");
@@ -61,7 +61,7 @@ asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::exchangeCodeForTokens(st
 
     auto json = boost::json::parse(res.body()).as_object();
 
-    GoogleTokenResponse tokenResponse{
+    Type::GoogleTokenResponse tokenResponse{
         .accessToken = std::string(json["access_token"].as_string()),
         .refreshToken = optionalString(json, "refresh_token"),
         .idToken = optionalString(json, "id_token"),
@@ -72,7 +72,7 @@ asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::exchangeCodeForTokens(st
 
     co_return tokenResponse;
 }
-asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::refreshAccessToken(std::string_view refreshToken) {
+asio::awaitable<Type::GoogleTokenResponse> GoogleOAuthClient::refreshAccessToken(std::string_view refreshToken) {
     if (config["GOOGLE_CLIENT_ID"].empty() || config["GOOGLE_CLIENT_SECRET"].empty()) {
         throw std::logic_error("Google OAuth config is missing");
     }
@@ -102,7 +102,7 @@ asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::refreshAccessToken(std::
 
     auto json = boost::json::parse(res.body()).as_object();
 
-    GoogleTokenResponse tokenResponse{
+    Type::GoogleTokenResponse tokenResponse{
         .accessToken = std::string(json["access_token"].as_string()),
         .refreshToken = optionalString(json, "refresh_token"),
         .idToken = optionalString(json, "id_token"),
@@ -114,7 +114,7 @@ asio::awaitable<GoogleTokenResponse> GoogleOAuthClient::refreshAccessToken(std::
     co_return tokenResponse;
 }
 
-asio::awaitable<GoogleUserInfo> GoogleOAuthClient::fetchUserInfo(std::string_view accessToken) {
+asio::awaitable<Type::GoogleUserInfo> GoogleOAuthClient::fetchUserInfo(std::string_view accessToken) {
     http::request<http::string_body> req{http::verb::get, "/v1/userinfo", 11};
     req.set(http::field::host, "openidconnect.googleapis.com");
     req.set(http::field::content_type, "application/json");
@@ -132,7 +132,7 @@ asio::awaitable<GoogleUserInfo> GoogleOAuthClient::fetchUserInfo(std::string_vie
 
     auto json = boost::json::parse(res.body()).as_object();
 
-    GoogleUserInfo userInfo{
+    Type::GoogleUserInfo userInfo{
         .sub = std::string(json["sub"].as_string()),
         .email = optionalString(json, "email").value_or(""),
         .name = optionalString(json, "name").value_or(""),

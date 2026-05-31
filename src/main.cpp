@@ -16,7 +16,7 @@ std::string envOrDefault(const char* name, std::string fallback) {
 }
 
 int main() {
-    auto address = envOrDefault("SERVER_ADDRESS", "0.0.0.0");
+    auto address = envOrDefault("SERVER_ADDRESS", "127.0.0.1");
     auto port = envOrDefault("SERVER_PORT", "8080");
 
     std::println("Starting server on {}:{}", address, port);

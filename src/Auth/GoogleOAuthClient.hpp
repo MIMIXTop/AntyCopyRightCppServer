@@ -19,9 +19,9 @@ class GoogleOAuthClient {
 public:
     explicit GoogleOAuthClient(boost::asio::any_io_executor executor);
 
-    boost::asio::awaitable<GoogleTokenResponse> exchangeCodeForTokens(std::string_view code);
-    boost::asio::awaitable<GoogleTokenResponse> refreshAccessToken(std::string_view refreshToken);
-    boost::asio::awaitable<GoogleUserInfo> fetchUserInfo(std::string_view accessToken);
+    boost::asio::awaitable<Type::GoogleTokenResponse> exchangeCodeForTokens(std::string_view code);
+    boost::asio::awaitable<Type::GoogleTokenResponse> refreshAccessToken(std::string_view refreshToken);
+    boost::asio::awaitable<Type::GoogleUserInfo> fetchUserInfo(std::string_view accessToken);
 
 private:
     boost::asio::any_io_executor executor_;

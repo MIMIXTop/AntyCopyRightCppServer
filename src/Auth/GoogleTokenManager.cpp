@@ -53,7 +53,7 @@ asio::awaitable<std::optional<std::string>> GoogleTokenManager::getValidAccessTo
             co_return std::nullopt;
         }
 
-        GoogleTokenResponse tokenRes;
+        Type::GoogleTokenResponse tokenRes;
         try {
             tokenRes = co_await client.refreshAccessToken(decrypt_refresh_token);
         } catch (const std::exception& e) {

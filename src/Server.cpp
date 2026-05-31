@@ -236,6 +236,14 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
     auto res = co_await handle_document_request(req_vec, doc_vec, tp.get_executor());
     co_return res;
 }
+
+asio::awaitable<void> Server::saveDocumentsHandler(std::shared_ptr<std::vector<Document>> container)
+{
+    for (auto&& doc : *container) {
+        co_await databaseSession->insertDocument(doc);
+    }
+}
+
 asio::awaitable<http::response<http::string_body>>
 Server::authGoogleStartHandler(http::request<http::string_body> req) {
     using namespace std::literals;
@@ -312,8 +320,8 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
         co_return http::response<http::string_body> {http::status::unauthorized, req.version()};
     }
 
-    GoogleUserInfo client;
-    GoogleTokenResponse token;
+    Type::GoogleUserInfo client;
+    Type::GoogleTokenResponse token;
     try {
         GoogleOAuthClient googleOAuthClient{ioc_.get_executor()};
         token = co_await googleOAuthClient.exchangeCodeForTokens((*code).value);
@@ -327,7 +335,7 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
     }
 
     auto user = co_await databaseSession->selectAuthUserByGoogleSub(client.sub);
-    std::optional<AuthUser> authUser;
+    std::optional<Type::AuthUser> authUser;
     auto loginAt = util::time::getCurrentTimestamp();
     if (!user.has_value()) {
         authUser = co_await databaseSession->insertAuthUser(client.sub, client.email, client.name, client.pictureUrl, loginAt);
@@ -356,7 +364,7 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
         refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
     } else {
         auto existingTokens = co_await databaseSession->selectGoogleOAuthTokens(authUser->id);
-        refresh_token_enc = existingTokens.and_then([](const GoogleOAuthTokens& tokens) {
+        refresh_token_enc = existingTokens.and_then([](const Type::GoogleOAuthTokens& tokens) {
             return tokens.refreshTokenEnc;
         });
     }
@@ -570,9 +578,7 @@ asio::awaitable<http::response<http::string_body>> Server::handle_document_reque
             }
         }
 
-        for (auto&& doc : *container) {
-            co_await databaseSession->insertDocument(doc);
-        }
+        asio::co_spawn(tp.get_executor(), saveDocumentsHandler(container), asio::detached);
     }
 
     http::request<http::string_body> request { http::verb::post, "/analysis", 11 };
@@ -626,7 +632,7 @@ asio::awaitable<void> Server::download_extract_store(
     container->emplace_back(std::move(doc_text.value()), req.id);
 }
 
-asio::awaitable<std::tuple<std::optional<AppSession>, std::string>> Server::getSessionFromCookie(http::request<http::string_body>& req) {
+asio::awaitable<std::tuple<std::optional<Type::AppSession>, std::string>> Server::getSessionFromCookie(http::request<http::string_body>& req) {
 
     std::string_view cookieName = config["SESSION_COOKIE_NAME"];
     if (cookieName.empty()) {

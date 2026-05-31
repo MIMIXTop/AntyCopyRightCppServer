@@ -61,6 +61,7 @@ private:
 
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
+    asio::awaitable<void> saveDocumentsHandler(std::shared_ptr<std::vector<Document>> container);
 
     asio::awaitable<http::response<http::string_body>> authGoogleStartHandler(http::request<http::string_body> req);
 
@@ -79,7 +80,7 @@ private:
     template<typename T>
     std::optional<std::string> getCookie(const http::request<T>& req, std::string_view cookieName);
 
-    asio::awaitable<std::tuple<std::optional<AppSession>, std::string>> getSessionFromCookie(http::request<http::string_body>& req);
+    asio::awaitable<std::tuple<std::optional<Type::AppSession>, std::string>> getSessionFromCookie(http::request<http::string_body>& req);
 
 };
 }   // namespace Network
