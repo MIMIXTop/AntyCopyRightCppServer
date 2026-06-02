@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: anticopyright_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: my_pgbouncer
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: user
+      DB_PASSWORD: pass
+      DB_NAME: db
+
+      AUTH_TYPE: scram-sha-256
+
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      MAX_PREPARED_STATEMENTS: 100
+    ports:
+      - "6432:5432"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+
+volumes:
+  pgdata:

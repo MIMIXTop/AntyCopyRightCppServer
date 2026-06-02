@@ -49,7 +49,10 @@ Server::Server(
     asio::io_context& io,
     const std::string& address,
     const std::string& port)
-  : ioc_(io), address_(address), port_(port), databaseSession(std::make_shared<DataBaseSession>()) {}
+    : ioc_(io), address_(address), port_(port),
+      databaseSession(std::make_shared<Data::Database>(
+         "host=localhost port=6432 dbname=db user=user password=pass"
+      )) {}
 
 void Server::start() { asio::co_spawn(ioc_, listen(), asio::detached); }
 
@@ -60,29 +63,6 @@ const std::unordered_map<std::string, Server::RequesType> Server::changeReqToEnu
     { "/api/auth/me", AuthMe },
     { "/api/auth/logout", AuthLogout }
 };
-
-template <typename T>
-std::optional<std::string> Server::getCookie(const http::request<T>& req, std::string_view cookieName) {
-
-    auto cookie = util::network::parse_cookie(req[http::field::cookie]);
-    for (auto&& [key, value] : cookie) {
-        if (key == cookieName) {
-            return  value;
-        }
-    }
-
-    return std::nullopt;
-}
-
-void Server::applyCorsHeaders(http::response<http::string_body>& res) const {
-    const auto appOrigin = config["APP_ORIGIN"];
-    if (!appOrigin.empty()) {
-        res.set(http::field::access_control_allow_origin, appOrigin);
-    }
-    res.set("Access-Control-Allow-Credentials", "true");
-    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
-    res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
-}
 
 asio::awaitable<void> Server::doSession(tcp_stream stream) {
     beast::flat_buffer buffer;
@@ -136,6 +116,16 @@ asio::awaitable<void> Server::listen() {
     } catch (const std::exception& e) {
         std::println(std::cerr, "Exception in listen: {}", e.what());
     }
+}
+
+void Server::applyCorsHeaders(http::response<http::string_body>& res) const {
+    const auto appOrigin = config["APP_ORIGIN"];
+    if (!appOrigin.empty()) {
+        res.set(http::field::access_control_allow_origin, appOrigin);
+    }
+    res.set("Access-Control-Allow-Credentials", "true");
+    res.set(http::field::access_control_allow_methods, "GET, POST, OPTIONS");
+    res.set(http::field::access_control_allow_headers, "Content-Type, Authorization");
 }
 
 asio::awaitable<http::response<http::string_body>> Server::requestHandler(http::request<http::string_body> req) {
@@ -217,7 +207,7 @@ asio::awaitable<http::response<http::string_body>> Server::analyzesHandler(http:
         const auto& file_obj = item.at("file");
         auto file_id = std::string(file_obj.at("file_id").as_string());
 
-        auto&& result = co_await databaseSession->selectDocumentById(file_id);
+        auto&& result = co_await databaseSession->selectDocument(file_id);
         if (result.has_value()) {
             doc_vec.push_back(result.value());
             continue;
@@ -286,6 +276,7 @@ Server::authGoogleStartHandler(http::request<http::string_body> req) {
 
     co_return res;
 }
+
 asio::awaitable<http::response<http::string_body>>
 Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
 
@@ -337,50 +328,60 @@ Server::authGoogleCallbackHandler(http::request<http::string_body> req) {
     auto user = co_await databaseSession->selectAuthUserByGoogleSub(client.sub);
     std::optional<Type::AuthUser> authUser;
     auto loginAt = util::time::getCurrentTimestamp();
-    if (!user.has_value()) {
-        authUser = co_await databaseSession->insertAuthUser(client.sub, client.email, client.name, client.pictureUrl, loginAt);
-    } else {
-        authUser = co_await databaseSession->updateAuthUserLogin(user->id, client.email, client.name, client.pictureUrl, loginAt);
-    }
-
-    if (!authUser.has_value()) {
-        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
-    }
-
+    
     auto tokenEncryptionKey = std::string(config["TOKEN_ENCRYPTION_KEY"]);
     if (tokenEncryptionKey.empty()) {
-        tokenEncryptionKey = std::string(config["SECRET_KEY"]);
+       tokenEncryptionKey = std::string(config["SECRET_KEY"]);
     }
     if (tokenEncryptionKey.empty()) {
-        http::response<http::string_body> res{http::status::internal_server_error, req.version()};
-        res.body() = "Token encryption key is missing";
-        res.prepare_payload();
-        co_return res;
+       http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+       res.body() = "Token encryption key is missing";
+       res.prepare_payload();
+       co_return res;
     }
 
     auto access_token_enc = util::textEncrypt(token.accessToken, tokenEncryptionKey);
     std::optional<std::string> refresh_token_enc;
     if (token.refreshToken.has_value()) {
-        refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
-    } else {
-        auto existingTokens = co_await databaseSession->selectGoogleOAuthTokens(authUser->id);
-        refresh_token_enc = existingTokens.and_then([](const Type::GoogleOAuthTokens& tokens) {
-            return tokens.refreshTokenEnc;
-        });
+       refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
+    } else if (user.has_value()) {
+       // Только для существующих пользователей пытаемся получить старый refresh token
+       auto existingTokens = co_await databaseSession->selectGoogleOAuthTokens(user->id);
+       refresh_token_enc = existingTokens.and_then([](const Type::GoogleOAuthTokens& tokens) {
+           return tokens.refreshTokenEnc;
+       });
     }
 
     auto expiresAt = util::time::getCurrentTimeAfterSeconds(token.expiresIn);
-    auto res = co_await databaseSession->upsertGoogleOAuthTokens({
-        .userId = authUser->id,
-        .accessTokenEnc = access_token_enc,
-        .refreshTokenEnc = refresh_token_enc,
-        .expiresAt = expiresAt,
-        .scope = token.scope,
-        .tokenType = token.tokenType
-    });
+    Type::GoogleOAuthTokens oauthTokens{
+       .userId = "",  // Будет установлен в методе для новых пользователей
+       .accessTokenEnc = access_token_enc,
+       .refreshTokenEnc = refresh_token_enc,
+       .expiresAt = expiresAt,
+       .scope = token.scope,
+       .tokenType = token.tokenType
+    };
 
-    if (!res) {
-        co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
+    // Использовать атомарные операции вместо двойного вызова
+    if (!user.has_value()) {
+       // Новый пользователь - создать с токенами в одной транзакции
+       authUser = co_await databaseSession->registerNewAuthUserWithTokens(
+           client.sub, client.email, client.name, client.pictureUrl, loginAt, oauthTokens
+       );
+    } else {
+       // Существующий пользователь - обновить с токенами в одной транзакции
+       oauthTokens.userId = user->id;
+       auto updateSuccess = co_await databaseSession->updateAuthUserLoginWithTokens(
+           user->id, client.email, client.name, client.pictureUrl, loginAt, oauthTokens
+       );
+       if (!updateSuccess) {
+           co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};
+       }
+       authUser = user;
+    }
+
+    if (!authUser.has_value()) {
+       co_return http::response<http::string_body> {http::status::internal_server_error, req.version()};;
     }
 
     auto sessionId = util::randomUrlSafeToken();
@@ -539,7 +540,6 @@ asio::awaitable<http::response<http::string_body>> Server::classroomProxyHandler
 
     co_return googleResponse;
 }
-
 asio::awaitable<http::response<http::string_body>> Server::handle_document_request(
     std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex) {
     auto container = std::make_shared<std::vector<Document>>();
@@ -630,6 +630,19 @@ asio::awaitable<void> Server::download_extract_store(
     co_await asio::post(store_strand, asio::use_awaitable);
 
     container->emplace_back(std::move(doc_text.value()), req.id);
+}
+
+template <typename T>
+std::optional<std::string> Server::getCookie(const http::request<T>& req, std::string_view cookieName) {
+
+    auto cookie = util::network::parse_cookie(req[http::field::cookie]);
+    for (auto&& [key, value] : cookie) {
+        if (key == cookieName) {
+            return  value;
+        }
+    }
+
+    return std::nullopt;
 }
 
 asio::awaitable<std::tuple<std::optional<Type::AppSession>, std::string>> Server::getSessionFromCookie(http::request<http::string_body>& req) {

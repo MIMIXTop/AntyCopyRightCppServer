@@ -42,6 +42,22 @@ namespace Network::Data
             std::string_view pictureUrl,
             std::string_view lastLoginAt);
 
+        boost::asio::awaitable<std::optional<Type::AuthUser>> registerNewAuthUserWithTokens(
+            std::string_view googleSub,
+            std::string_view email,
+            std::string_view name,
+            std::string_view pictureUrl,
+            std::string_view lastLoginAt,
+            const Type::GoogleOAuthTokens& tokens);
+
+        boost::asio::awaitable<bool> updateAuthUserLoginWithTokens(
+            std::string_view id,
+            std::string_view email,
+            std::string_view name,
+            std::string_view pictureUrl,
+            std::string_view lastLoginAt,
+            const Type::GoogleOAuthTokens& tokens);
+
         boost::asio::awaitable<bool> upsertGoogleOAuthTokens(const Type::GoogleOAuthTokens& tokens);
         boost::asio::awaitable<std::optional<Type::GoogleOAuthTokens>> selectGoogleOAuthTokens(std::string_view userId);
 
@@ -54,6 +70,7 @@ namespace Network::Data
         boost::asio::awaitable<std::optional<Type::AppSession>> selectActiveAppSession(
             std::string_view sessionHash,
             std::string_view now);
+
         boost::asio::awaitable<bool> revokeAppSession(std::string_view sessionHash, std::string_view revokedAt);
         boost::asio::awaitable<bool> updateAppSessionLastSeen(std::string_view sessionHash, std::string_view lastSeenAt);
 

@@ -3,7 +3,7 @@
 #include "Auth/GoogleTokenManager.hpp"
 #include "Models/Paragraph.hpp"
 #include "Models/Document.hpp"
-#include "Session/DataBaseSession.hpp"
+#include "Database/Database.hpp"
 #include "Session/SslSession.hpp"
 #include "Util/ConfigParser.hpp"
 
@@ -51,7 +51,7 @@ private:
     std::string port_;
 
     asio::thread_pool tp { std::thread::hardware_concurrency() / 2 };
-    std::shared_ptr<DataBaseSession> databaseSession;
+    std::shared_ptr<Data::Database> databaseSession;
 
     Util::ConfigParser config;
 

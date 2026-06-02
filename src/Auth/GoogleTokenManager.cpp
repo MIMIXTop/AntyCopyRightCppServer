@@ -15,7 +15,7 @@ namespace asio = boost::asio;
 namespace  Network::Auth {
 
 GoogleTokenManager::GoogleTokenManager(
-    const asio::any_io_executor& executor, const std::shared_ptr<DataBaseSession>& database,
+    const asio::any_io_executor& executor, const std::shared_ptr<Data::Database>& database,
     Util::ConfigParser& parser)
 : databaseSession(database) , config(parser), executor(executor) {}
 
