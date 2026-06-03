@@ -31,7 +31,8 @@ public:
 
 private:
     enum RequesType {
-        GetStudentAnalizis,
+        GetStudentAnalyzes,
+        GetFragmentAnalyzes,
         AuthGoogleStart,
         AuthGoogleCallback,
         AuthMe,
@@ -42,6 +43,7 @@ private:
         http::request<http::string_body> req;
         std::string id;
         std::string file_type;
+        std::string file_name;
     };
 
     static const std::unordered_map<std::string, RequesType> changeReqToEnum;
@@ -61,6 +63,7 @@ private:
 
     asio::awaitable<http::response<http::string_body>> requestHandler(http::request<http::string_body> req);
     asio::awaitable<http::response<http::string_body>> analyzesHandler(http::request<http::string_body> req);
+    asio::awaitable<http::response<http::string_body>> analyzesFragmentsHandler(http::request<http::string_body> req);
     asio::awaitable<void> saveDocumentsHandler(std::shared_ptr<std::vector<Document>> container);
 
     asio::awaitable<http::response<http::string_body>> authGoogleStartHandler(http::request<http::string_body> req);
