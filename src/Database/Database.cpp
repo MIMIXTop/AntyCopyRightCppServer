@@ -745,7 +745,6 @@ namespace Network::Data {
                     }
                 );
                 
-                // 3. COMMIT обе операции вместе
                 txn.commit();
                 return true;
                 
@@ -807,6 +806,70 @@ namespace Network::Data {
         });
 
         co_return authUser;
+    }
+
+    boost::asio::awaitable<std::optional<std::tuple<Models::DocumentFragment, Models::DocumentFragment>>> Database::selectTwoDocumentFragments(
+        std::string_view firstDocId, std::string_view secondDocId, std::string_view fragmentName) {
+        auto fragment = co_await Util::Async::AsyncExecute(pool_, [this, fragmentName, firstDocId, secondDocId] mutable -> std::optional<std::tuple<Models::DocumentFragment, Models::DocumentFragment>> {
+            try {
+                auto connection = getConnection();
+                pqxx::work txn(*connection);
+                std::string selectFragmentSql = R"(
+                    SELECT document_sections.id , d.id, d.external_id FROM document_sections
+                    JOIN public.documents d on d.id = document_sections.document_id
+                    WHERE
+                        document_sections.title = $1
+                        AND d.external_id IN($2, $3)
+                )";
+
+                auto result= txn.exec(
+                    selectFragmentSql,
+                    pqxx::params{
+                        fragmentName,
+                        firstDocId,
+                        secondDocId,
+                    }
+                );
+
+                if (result.size() != 2) {
+                    for (auto const &row : result) {
+                        for (auto const &field : row) {
+                            std::cout << field.c_str() << "\t";
+                        }
+                        std::cout << std::endl;
+                    }
+                    return std::nullopt;
+                }
+
+                Models::DocumentFragment firstFragment;
+                Models::DocumentFragment secondFragment;
+
+                for (const auto& row : result) {
+                    Models::DocumentFragment currentFragment;
+
+                    currentFragment.fragment_id = row[0].as<std::string>();
+                    currentFragment.document_id = row[1].as<std::string>();
+                    std::string external_id = row[2].as<std::string>();
+
+                    if (external_id == firstDocId) {
+                        firstFragment = std::move(currentFragment);
+                    } else if (external_id == secondDocId) {
+                        secondFragment = std::move(currentFragment);
+                    }
+                }
+
+                return std::make_tuple(firstFragment, secondFragment);
+
+            } catch (const pqxx::sql_error &e) {
+                std::cerr << "SQL error: " << e.what() << " Query: " << e.query() << '\n';
+                return std::nullopt;
+            } catch (const std::exception &e) {
+                std::cerr << "General error: " << e.what() << '\n';
+                return std::nullopt;
+            }
+        });
+
+        co_return fragment;
     }
 
     std::unique_ptr<pqxx::connection> Database::getConnection() {

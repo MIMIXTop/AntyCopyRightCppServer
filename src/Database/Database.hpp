@@ -1,8 +1,8 @@
 #pragma once
 
 #include "Models/Document.hpp"
-#include "Util/ConfigParser.hpp"
 #include "Models/auth/google/googleAuth.hpp"
+#include "Models/data/DatabaseModels.hpp"
 
 #include <memory>
 #include <string_view>
@@ -75,6 +75,10 @@ namespace Network::Data
         boost::asio::awaitable<bool> updateAppSessionLastSeen(std::string_view sessionHash, std::string_view lastSeenAt);
 
         boost::asio::awaitable<std::optional<Type::AuthUser>> selectAuthUserById(std::string_view userId);
+
+        boost::asio::awaitable<std::optional<std::tuple<Models::DocumentFragment, Models::DocumentFragment>>> selectTwoDocumentFragments(std::string_view firstDocId, std::string_view secondDocId, std::string_view fragmentName);
+
+
     private:
         std::unique_ptr<pqxx::connection> getConnection();
         boost::asio::thread_pool pool_;

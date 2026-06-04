@@ -26,6 +26,8 @@
 #include <string>
 #include <map>
 
+#include "Util/AsyncExecution.hpp"
+
 namespace {
     std::array<std::string_view, 8> googleOAuthScopes{
         "https://www.googleapis.com/auth/classroom.courses.readonly",
@@ -179,7 +181,7 @@ namespace Network {
                 }
                 co_return http::response<http::string_body>{http::status::method_not_allowed, req.version()};
             case GetFragmentAnalyzes:
-                if (req.method() == http::verb::get) {
+                if (req.method() == http::verb::post) {
                     co_return co_await analyzesFragmentsHandler(std::move(req));
                 }
                 co_return http::response<http::string_body>{http::status::method_not_allowed, req.version()};
@@ -236,10 +238,33 @@ namespace Network {
 
     asio::awaitable<http::response<http::string_body>> Server::analyzesFragmentsHandler(
         http::request<http::string_body> req) {
+        auto json = boost::json::parse(std::move(req.body())).as_object();
+
+        std::string fragment_name= std::string(json.at("fragment_name").as_string());
+        std::string firstDocId = std::string(json.at("first_doc_id").as_string());
+        std::string secondDocId = std::string(json.at("second_doc_id").as_string());
+
+        auto databaseResponse = co_await databaseSession->selectTwoDocumentFragments(firstDocId, secondDocId, fragment_name);
+
+        if (databaseResponse == std::nullopt) {
+            co_return http::response<http::string_body> {http::status::service_unavailable, req.version()};
+        }
+
+        auto [first, second] = databaseResponse.value();
+
+        boost::json::value jvResult = {
+            {"first_document_id", first.document_id},
+            {"second_document_id", second.document_id},
+            {"first_fragment_id", first.fragment_id},
+            {"second_fragment_id", second.fragment_id},
+        };
+
+        auto body = boost::json::serialize(jvResult);
+
         http::request<http::string_body> request{http::verb::get, "/fragments_analysis", 11};
         request.set(http::field::content_type, "application/json");
         request.set(http::field::host, config["ML_SERVER_HOST"]);
-        request.body() = req.body();
+        request.body() = body;
         request.prepare_payload();
 
         auto session = std::make_shared<SimpleSession>(ioc_.get_executor());
