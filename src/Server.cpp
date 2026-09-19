@@ -1,6 +1,6 @@
 #include "Server.hpp"
 
-#include "Auth/GoogleOAuthClient.hpp"
+#include "Services/Auth/GoogleOAuthClient.hpp"
 #include "DocumentReader/DocReader.hpp"
 #include "Models/Document.hpp"
 #include "Session/SimpleSession.hpp"
@@ -10,7 +10,6 @@
 
 #include <boost/json.hpp>
 #include <boost/url.hpp>
-#include <boost/algorithm/string.hpp>
 #include <boost/url/params_ref.hpp>
 
 #include <boost/asio/experimental/parallel_group.hpp>
@@ -26,6 +25,7 @@
 #include <string>
 #include <map>
 
+#include "Services/Auth/GoogleTokenManager.hpp"
 #include "Util/AsyncExecution.hpp"
 
 namespace {
@@ -190,10 +190,31 @@ namespace Network {
 
     asio::awaitable<http::response<http::string_body> > Server::analyzesHandler(http::request<http::string_body> req) {
         std::vector<Document> doc_vec;
+        std::string userId;
 
-        auto [session, _] = co_await getSessionFromCookie(req);
-        if (session == std::nullopt) {
-            co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
+        auto parsedTarget = boost::urls::parse_origin_form(req.target());
+        if (!parsedTarget) {
+            co_return http::response<http::string_body>{http::status::bad_request, req.version()};
+        }
+
+        auto tgId = parsedTarget->params().find("telegram_id");
+        if (tgId != parsedTarget->params().end()) {
+            try {
+                int64_t telegramId = std::stoll((*tgId).value);
+                auto userOpt = co_await databaseSession->selectAuthUserByTelegramId(telegramId);
+                if (!userOpt.has_value()) {
+                    co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
+                }
+                userId = userOpt->id;
+            } catch (...) {
+                co_return http::response<http::string_body>{http::status::bad_request, req.version()};
+            }
+        } else {
+            auto [session, _] = co_await getSessionFromCookie(req);
+            if (session == std::nullopt) {
+                co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
+            }
+            userId = session->userId;
         }
 
         Auth::GoogleTokenManager tokenManager{
@@ -202,7 +223,7 @@ namespace Network {
             config
         };
 
-        auto accessToken = co_await tokenManager.getValidAccessToken(session->userId);
+        auto accessToken = co_await tokenManager.getValidAccessToken(userId);
         if (accessToken == std::nullopt) {
             co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
         }
@@ -296,7 +317,26 @@ namespace Network {
         auto randomTokenHash = util::sha256Hex(randomToken);
         auto expiresAt = util::time::getCurrentTimeAfterMinutes(5);
 
-        if (auto stateResult = co_await databaseSession->insertOAuthState(randomTokenHash, expiresAt); !stateResult) {
+        boost::urls::url_view reqUrl{req.target()};
+        auto params = reqUrl.params();
+        auto it = params.find("telegram_id");
+        if (it == params.end()) {
+            auto res = http::response<http::string_body>{http::status::bad_request, req.version()};
+            res.body() = "In query params not found 'telegram_id'";
+            res.prepare_payload();
+            co_return res;
+        }
+        int64_t telegramId = 0;
+        try {
+            telegramId = std::stoll((*it).value);
+        } catch (...) {
+            http::response<http::string_body> res{http::status::bad_request, req.version()};
+            res.body() = "Invalid telegram_id";
+            res.prepare_payload();
+            co_return res;
+        }
+
+        if (auto stateResult = co_await databaseSession->insertOAuthState(randomTokenHash, telegramId,expiresAt); !stateResult) {
             http::response<http::string_body> res{http::status::internal_server_error, req.version()};
             res.body() = "Failed to create OAuth state";
             res.prepare_payload();
@@ -308,14 +348,14 @@ namespace Network {
         std::string_view baseUrl = "https://accounts.google.com/o/oauth2/v2/auth";
         boost::urls::url redirectUrl{baseUrl};
 
-        auto params = redirectUrl.params();
-        params.append({"client_id", config["GOOGLE_CLIENT_ID"]});
-        params.append({"redirect_uri", config["GOOGLE_REDIRECT_URI"]});
-        params.append({"response_type", "code"});
-        params.append({"scope", scope});
-        params.append({"access_type", "offline"});
-        params.append({"include_granted_scopes", "true"});
-        params.append({"state", randomToken});
+        auto params_r = redirectUrl.params();
+        params_r.append({"client_id", config["GOOGLE_CLIENT_ID"]});
+        params_r.append({"redirect_uri", config["GOOGLE_REDIRECT_URI"]});
+        params_r.append({"response_type", "code"});
+        params_r.append({"scope", scope});
+        params_r.append({"access_type", "offline"});
+        params_r.append({"include_granted_scopes", "true"});
+        params_r.append({"state", randomToken});
 
         http::response<http::string_body> res{http::status::found, req.version()};
         res.set(http::field::location, redirectUrl.buffer());
@@ -353,9 +393,13 @@ namespace Network {
         auto stateHash = util::sha256Hex(stateValue);
         auto now = util::time::getCurrentTimestamp();
 
-        if (auto ok = co_await databaseSession->consumeOAuthState(stateHash, now); ok == false) {
+        auto telegramIdOpt = co_await databaseSession->consumeOAuthState(stateHash, now);
+
+        if (!telegramIdOpt.has_value()) {
             co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
         }
+
+        int64_t telegramId = telegramIdOpt.value();
 
         Type::GoogleUserInfo client;
         Type::GoogleTokenResponse token;
@@ -391,7 +435,6 @@ namespace Network {
         if (token.refreshToken.has_value()) {
             refresh_token_enc = util::textEncrypt(token.refreshToken.value(), tokenEncryptionKey);
         } else if (user.has_value()) {
-            // Только для существующих пользователей пытаемся получить старый refresh token
             auto existingTokens = co_await databaseSession->selectGoogleOAuthTokens(user->id);
             refresh_token_enc = existingTokens.and_then([](const Type::GoogleOAuthTokens &tokens) {
                 return tokens.refreshTokenEnc;
@@ -400,7 +443,7 @@ namespace Network {
 
         auto expiresAt = util::time::getCurrentTimeAfterSeconds(token.expiresIn);
         Type::GoogleOAuthTokens oauthTokens{
-            .userId = "", // Будет установлен в методе для новых пользователей
+            .userId = "",
             .accessTokenEnc = access_token_enc,
             .refreshTokenEnc = refresh_token_enc,
             .expiresAt = expiresAt,
@@ -408,14 +451,11 @@ namespace Network {
             .tokenType = token.tokenType
         };
 
-        // Использовать атомарные операции вместо двойного вызова
         if (!user.has_value()) {
-            // Новый пользователь - создать с токенами в одной транзакции
             authUser = co_await databaseSession->registerNewAuthUserWithTokens(
                 client.sub, client.email, client.name, client.pictureUrl, loginAt, oauthTokens
             );
         } else {
-            // Существующий пользователь - обновить с токенами в одной транзакции
             oauthTokens.userId = user->id;
             auto updateSuccess = co_await databaseSession->updateAuthUserLoginWithTokens(
                 user->id, client.email, client.name, client.pictureUrl, loginAt, oauthTokens
@@ -430,47 +470,49 @@ namespace Network {
             co_return http::response<http::string_body>{http::status::internal_server_error, req.version()};;
         }
 
-        auto sessionId = util::randomUrlSafeToken();
-        auto sessionHash = util::sha256Hex(sessionId);
-        auto sessionTtlDaysText = std::string(config["SESSION_TTL_DAYS"]);
-        if (sessionTtlDaysText.empty()) {
-            sessionTtlDaysText = "7";
+        bool linkSuccess = co_await databaseSession->linkTelegramIdToUser(authUser->id, telegramId);
+        if (!linkSuccess) {
+            std::println(std::cerr, "Failed to link telegram_id {} to user {}", telegramId, authUser->id);
+            co_return http::response<http::string_body>{http::status::internal_server_error, req.version()};
         }
-        auto sessionTtlDays = std::stoi(sessionTtlDaysText);
-        auto sessionMaxAge = sessionTtlDays * 24 * 60 * 60;
-        auto sessionExpiresAt = util::time::getCurrentTimeAfterMinutes(sessionTtlDays * 24 * 60);
-        std::string userAgent;
 
-        if (auto it = req.find(http::field::user_agent); it != req.end()) {
-            userAgent = std::string(it->value());
-        }
-        auto resAppSession = co_await databaseSession->insertAppSession(
-            "",
-            authUser->id,
-            sessionHash,
-            sessionExpiresAt,
-            userAgent
-        );
+        std::string botUsername = std::string(config["TELEGRAM_BOT_USERNAME"]);
+        if (botUsername.empty()) botUsername = "KiraACR_bot";
 
-        if (!resAppSession) {
-            co_return http::response<http::string_body>{http::status::internal_server_error, req.version()};;
-        }
-        http::response<http::string_body> ress{http::status::found, req.version()};
-        ress.set(http::field::location, config["APP_ORIGIN"]);
-        ress.set(http::field::server, "AntyCopyRightCppServer");
-        auto cookieName = std::string(config["SESSION_COOKIE_NAME"]);
-        if (cookieName.empty()) {
-            cookieName = "anty_session";
-        }
-        auto cookie_value = std::format(
-            "{}={}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age={}",
-            cookieName,
-            sessionId,
-            sessionMaxAge
-        );
-        ress.set(http::field::set_cookie, cookie_value);
-        ress.prepare_payload();
-        co_return ress;
+        std::string htmlBody = std::format(R"html(
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Авторизация успешна</title>
+    <style>
+        body {{ font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; background-color: #f4f6f9; margin: 0; }}
+        .card {{ background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); text-align: center; }}
+        h1 {{ color: #2c3e50; font-size: 24px; }}
+        p {{ color: #7f8c8d; margin-bottom: 20px; }}
+        .btn {{ background-color: #2481cc; color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; display: inline-block; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>✅ Подключено!</h1>
+        <p>Google Classroom (<b>{}</b>) успешно привязан.</p>
+        <a href="tg://resolve?domain={}" class="btn">Вернуться в Telegram</a>
+    </div>
+    <script>
+        setTimeout(() => {{ window.location.href = "tg://resolve?domain={}"; }}, 1500);
+    </script>
+</body>
+</html>
+        )html", client.email, botUsername, botUsername);
+
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "text/html; charset=utf-8");
+        res.body() = htmlBody;
+        res.prepare_payload();
+
+        co_return res;
     }
 
     asio::awaitable<http::response<http::string_body> > Server::authMeHandler(http::request<http::string_body> req) {
@@ -549,15 +591,37 @@ namespace Network {
             co_return http::response<http::string_body>{http::status::bad_request, req.version()};
         }
 
+        boost::urls::url mutable_target(target);
+        std::string userId;
+
+        auto tgId = mutable_target.params().find("telegram_id");
+        if (tgId != mutable_target.params().end()) {
+            int64_t telegramId = std::stoll((*tgId).value);
+
+            auto userOpt = co_await databaseSession->selectAuthUserByTelegramId(telegramId);
+            if (!userOpt.has_value()) {
+                co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
+            }
+            userId = userOpt->id;
+
+            mutable_target.params().erase(tgId);
+        } else {
+            auto [session , _] = co_await getSessionFromCookie(req);
+            if (session == std::nullopt) {
+                co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
+            }
+            userId = session->userId;
+        }
+
         constexpr std::string_view prefix = "/api/classroom";
-        auto path = target.encoded_path();
+        auto path = mutable_target.encoded_path();
 
         std::string newTarget = "/v1";
         newTarget += path.substr(prefix.size());
 
-        if (!target.encoded_query().empty()) {
+        if (!mutable_target.encoded_query().empty()) {
             newTarget += "?";
-            newTarget += target.encoded_query();
+            newTarget += mutable_target.encoded_query();
         } else if (path == "/api/classroom/courses") {
             newTarget += "?courseStates=ACTIVE";
         }
@@ -569,12 +633,7 @@ namespace Network {
             config
         };
 
-        auto [session , _] = co_await getSessionFromCookie(req);
-        if (session == std::nullopt) {
-            co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
-        }
-
-        auto token = co_await tokenManager.getValidAccessToken(session->userId);
+        auto token = co_await tokenManager.getValidAccessToken(userId);
         if (token == std::nullopt) {
             co_return http::response<http::string_body>{http::status::unauthorized, req.version()};
         }
@@ -644,7 +703,16 @@ namespace Network {
             obj_array.emplace_back(jv);
         }
 
-        request.body() = boost::json::serialize(obj_array);
+        boost::json::object options;
+        options["strict_titles"] = false;
+        options["document_limit"] = 7;
+        options["jobs"] = 8;
+
+        boost::json::object payload;
+        payload["documents"] = std::move(obj_array);
+        payload["options"] = std::move(options);
+
+        request.body() = boost::json::serialize(payload);
         request.set(http::field::content_type, "application/json");
         request.set(http::field::host, config["ML_SERVER_HOST"]);
         request.prepare_payload();
@@ -659,7 +727,7 @@ namespace Network {
 
     asio::awaitable<void> Server::download_extract_store(
         DocumentRequest req, asio::any_io_executor cpu_ex, asio::strand<asio::any_io_executor> store_strand,
-        std::shared_ptr<std::vector<Document> > container) {
+        std::shared_ptr<std::vector<Document> > container) const {
         auto download_session = std::make_shared<SslSession>(ioc_.get_executor());
         auto doc_req = co_await download_session->downloadWithRedirect(req.req);
 

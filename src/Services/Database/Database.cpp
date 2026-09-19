@@ -127,15 +127,15 @@ namespace Network::Data {
         co_return document;
     }
 
-    boost::asio::awaitable<bool> Database::insertOAuthState(std::string_view stateHash, std::string_view expiresAt) {
-        bool success = co_await Util::Async::AsyncExecute(pool_, [this, stateHash, expiresAt] mutable -> bool {
+    boost::asio::awaitable<bool> Database::insertOAuthState(std::string_view stateHash, int64_t telegram_id, std::string_view expiresAt) {
+        bool success = co_await Util::Async::AsyncExecute(pool_, [this, stateHash, telegram_id, expiresAt] mutable -> bool {
             try {
                 auto connection = getConnection();
                 pqxx::work txn(*connection);
                 std::string insertStateSql = R"(
-                    INSERT INTO oauth_states (state_hash, expires_at) VALUES ($1, $2)
+                    INSERT INTO oauth_states (state_hash, telegram_id, expires_at) VALUES ($1, $2, $3)
                 )";
-                txn.exec(insertStateSql, pqxx::params{stateHash, expiresAt});
+                txn.exec(insertStateSql, pqxx::params{stateHash, telegram_id, expiresAt});
                 txn.commit();
                 return true;
             } catch (const pqxx::sql_error &e) {
@@ -149,8 +149,8 @@ namespace Network::Data {
         co_return success;
     }
 
-    boost::asio::awaitable<bool> Database::consumeOAuthState(std::string_view stateHash, std::string_view consumedId) {
-        bool success = co_await Util::Async::AsyncExecute(pool_, [this, stateHash, consumedId] mutable -> bool {
+    boost::asio::awaitable<std::optional<int64_t>> Database::consumeOAuthState(std::string_view stateHash, std::string_view consumedId) {
+        auto success = co_await Util::Async::AsyncExecute(pool_, [this, stateHash, consumedId] mutable -> std::optional<int64_t> {
             try {
                 auto connection = getConnection();
                 pqxx::work txn(*connection);
@@ -161,17 +161,23 @@ namespace Network::Data {
                         state_hash = $2
                         AND consumed_at IS NULL
                         AND expires_at > $3
+                    RETURNING telegram_id
                 )";
 
-                txn.exec(updateStateSql, pqxx::params{consumedId, stateHash, consumedId});
+                auto res = txn.exec(updateStateSql, pqxx::params{consumedId, stateHash, consumedId});
                 txn.commit();
-                return true;
+
+                if (res.empty()) {
+                    return std::nullopt;
+                }
+
+                return res[0][0].as<int64_t>();
             } catch (const pqxx::sql_error &e) {
                 std::cerr << "SQL error: " << e.what() << " Query: " << e.query() << '\n';
-                return false;
+                return std::nullopt;
             } catch (const std::exception &e) {
                 std::cerr << "General error: " << e.what() << '\n';
-                return false;
+                return std::nullopt;
             }
         });
 
@@ -334,7 +340,7 @@ namespace Network::Data {
                                $5,
                                $6
                            )
-                    ON CONFLICT (id)
+                    ON CONFLICT (user_id)
                     DO UPDATE SET
                         access_token_enc = excluded.access_token_enc,
                         refresh_token_enc = COALESCE(excluded.refresh_token_enc, google_oauth_tokens.refresh_token_enc),
@@ -870,6 +876,82 @@ namespace Network::Data {
         });
 
         co_return fragment;
+    }
+
+    boost::asio::awaitable<bool> Database::linkTelegramIdToUser(std::string_view userId, int64_t telegramId) {
+        auto success = co_await Util::Async::AsyncExecute(pool_, [telegramId, userId, this]() mutable -> bool {
+            try {
+                auto connection = getConnection();
+                pqxx::work txn(*connection);
+
+                std::string clearOldLink = R"(
+                    UPDATE auth_users
+                    SET telegram_id = NULL
+                    WHERE telegram_id = $1
+                )";
+
+                txn.exec(clearOldLink, pqxx::params{telegramId});
+
+                std::string_view linkTelegramIdToUserStr = R"(
+                UPDATE auth_users
+                SET
+                    telegram_id = $1
+                WHERE
+                    id = $2;
+                )";
+
+                auto res = txn.exec(linkTelegramIdToUserStr, pqxx::params{telegramId, userId});
+                txn.commit();
+
+                return res.affected_rows() > 0;
+            } catch (const pqxx::sql_error &e) {
+                std::cerr << "SQL error: " << e.what() << " Query: " << e.query() << '\n';
+                return false;
+            } catch (const std::exception &e) {
+                std::cerr << "General error: " << e.what() << '\n';
+                return false;
+            }
+        });
+        co_return success;
+    }
+
+    boost::asio::awaitable<std::optional<Type::AuthUser>> Database::selectAuthUserByTelegramId(int64_t telegramId) {
+        auto user = co_await Util::Async::AsyncExecute(pool_, [this, telegramId] mutable -> std::optional<Type::AuthUser> {
+            try {
+                auto connectin = getConnection();
+                pqxx::work txn(*connectin);
+
+                std::string query = R"(
+                    SELECT id, email, name, picture_url, google_sub
+                    FROM auth_users
+                    WHERE telegram_id = $1
+                )";
+
+                auto res = txn.exec(query, pqxx::params{std::to_string(telegramId)});
+                txn.commit();
+
+                if (res.empty()) {
+                    return std::nullopt;
+                }
+
+                auto row = res[0];
+                Type::AuthUser user;
+                user.id = row["id"].as<std::string>();
+                user.email = row["email"].as<std::string>();
+                user.name = row["name"].as<std::string>();
+                user.pictureUrl = row["picture_url"].as<std::string>();
+                user.googleSub = row["google_sub"].as<std::string>();
+
+                return user;
+            } catch (const pqxx::sql_error &e) {
+                std::cerr << "SQL error: " << e.what() << " Query: " << e.query() << '\n';
+                return std::nullopt;
+            } catch (const std::exception &e) {
+                std::cerr << "General error: " << e.what() << '\n';
+                return std::nullopt;
+            }
+        });
+        co_return user;
     }
 
     std::unique_ptr<pqxx::connection> Database::getConnection() {

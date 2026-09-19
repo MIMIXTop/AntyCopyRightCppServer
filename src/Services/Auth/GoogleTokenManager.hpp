@@ -2,7 +2,7 @@
 #include "Models/auth/google/googleAuth.hpp"
 #include "Util/Encrypt.hpp"
 
-#include "Database/Database.hpp"
+#include "Services/Database/Database.hpp"
 #include <Util/ConfigParser.hpp>
 
 #include <memory>

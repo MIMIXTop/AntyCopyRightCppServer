@@ -1,10 +1,7 @@
 #pragma once
 
-#include "Auth/GoogleTokenManager.hpp"
-#include "Models/Paragraph.hpp"
 #include "Models/Document.hpp"
-#include "Database/Database.hpp"
-#include "Session/SslSession.hpp"
+#include "Services/Database/Database.hpp"
 #include "Util/ConfigParser.hpp"
 
 #include <boost/asio.hpp>
@@ -13,7 +10,6 @@
 #include <boost/beast/http.hpp>
 #include <string>
 #include <unordered_map>
-#include <boost/url/error_types.hpp>
 #include <boost/url/url_view.hpp>
 
 namespace Network {
@@ -78,7 +74,7 @@ private:
         std::vector<DocumentRequest> vreq, std::span<Document> cache_docs, asio::any_io_executor cpu_ex);
     asio::awaitable<void> download_extract_store(
         DocumentRequest req, asio::any_io_executor cpu_ex, asio::strand<asio::any_io_executor> store_strand,
-        std::shared_ptr<std::vector<Document>> container);
+        std::shared_ptr<std::vector<Document>> container) const;
 
     template<typename T>
     std::optional<std::string> getCookie(const http::request<T>& req, std::string_view cookieName);

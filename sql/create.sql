@@ -6,6 +6,7 @@ create table auth_users (
                             email text not null,
                             name text,
                             picture_url text,
+                            telegram_id bigint unique,
                             created_at timestamptz not null default now(),
                             updated_at timestamptz not null default now(),
                             last_login_at timestamptz
@@ -35,6 +36,7 @@ create table app_sessions (
 
 create table oauth_states (
                               state_hash text primary key,
+                              telegram_id bigint not null,
                               expires_at timestamptz not null,
                               consumed_at timestamptz,
                               created_at timestamptz not null default now()

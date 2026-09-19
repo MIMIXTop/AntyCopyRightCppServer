@@ -24,8 +24,8 @@ namespace Network::Data
         boost::asio::awaitable<bool> deleteDocument(std::string_view documentId);
         boost::asio::awaitable<std::optional<Document>> selectDocument(std::string documentId);
 
-        boost::asio::awaitable<bool> insertOAuthState(std::string_view stateHash, std::string_view expiresAt);
-        boost::asio::awaitable<bool> consumeOAuthState(std::string_view stateHash, std::string_view consumedId);
+        boost::asio::awaitable<bool> insertOAuthState(std::string_view stateHash, int64_t telegram_id, std::string_view expiresAt);
+        boost::asio::awaitable<std::optional<int64_t>> consumeOAuthState(std::string_view stateHash, std::string_view consumedId);
 
         boost::asio::awaitable<std::optional<Type::AuthUser>> selectAuthUserByGoogleSub(std::string_view googleSub);
         boost::asio::awaitable<std::optional<Type::AuthUser>> insertAuthUser(
@@ -78,7 +78,8 @@ namespace Network::Data
 
         boost::asio::awaitable<std::optional<std::tuple<Models::DocumentFragment, Models::DocumentFragment>>> selectTwoDocumentFragments(std::string_view firstDocId, std::string_view secondDocId, std::string_view fragmentName);
 
-
+        boost::asio::awaitable<bool> linkTelegramIdToUser(std::string_view userId, int64_t telegramId);
+        boost::asio::awaitable<std::optional<Type::AuthUser>> selectAuthUserByTelegramId(int64_t telegramId);
     private:
         std::unique_ptr<pqxx::connection> getConnection();
         boost::asio::thread_pool pool_;
